@@ -29,7 +29,8 @@ public sealed class TrayIcon : IDisposable
     private enum AnimMode { Idle, Voice, KeyPulse }
 
     private const int Frames = 3;              // 每组帧数 = 宫格行数
-    private const int IconSize = 32;           // 托盘帧尺寸（高 DPI 下限）
+    private const int IconSize = 48;           // 托盘帧尺寸（高 DPI 下限；48 对 200%
+                                               // 缩放的 32px 槽仍超采样，bicubic 缩更净）
     // 帧节奏（数组下标即 (int)AnimMode）：待机慢呼吸、语音活跃、按键快闪
     private static readonly int[] FrameMs = { 700, 200, 130 };
 
@@ -184,20 +185,53 @@ public sealed class TrayIcon : IDisposable
         catch { return null; }
     }
 
-    /// <summary>切一格：整格 → 画布（格→IconSize 统一变换）。大小/位置恒定 ——
-    /// 帧间齐整由素材管线保证（归一化宫格），运行时零补偿。</summary>
+    /// <summary>切一格：内容包围盒 → 等比放大铺满画布居中。素材格内留白（2026-09-16
+    /// 实测内容仅占格 ~70%）会让托盘图标显小 —— 自动找非透明像素的 bbox 裁掉
+    /// 留白再放大，素材管线留白变了也不用回来改这里。</summary>
     private static IntPtr RenderFrame(Bitmap sheet, int x, int y, int w, int h)
     {
+        var (bx, by, bw, bh) = ContentBox(sheet, x, y, w, h);
+        if (bw < 1 || bh < 1) { bx = x; by = y; bw = w; bh = h; }   // 全透明格：退整格
         using var bmp = new Bitmap(IconSize, IconSize, PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(bmp))
         {
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
             g.PixelOffsetMode = PixelOffsetMode.Half;
+            // 等比放大铺满：短边富余居中，不拉伸变形（用户要「再大一点点」→ 去呼吸边）
+            var scale = IconSize / (double)Math.Max(bw, bh);
+            var dw = (int)Math.Round(bw * scale);
+            var dh = (int)Math.Round(bh * scale);
             g.DrawImage(sheet,
-                new RectangleF(0, 0, IconSize, IconSize),
-                new RectangleF(x, y, w, h), GraphicsUnit.Pixel);
+                new RectangleF((IconSize - dw) / 2f, (IconSize - dh) / 2f, dw, dh),
+                new RectangleF(bx, by, bw, bh), GraphicsUnit.Pixel);
         }
         return bmp.GetHicon();
+    }
+
+    /// <summary>格内非透明内容的包围盒（LockBits 快扫；启动时 9 格一次性，毫秒级）。</summary>
+    private static (int X, int Y, int W, int H) ContentBox(Bitmap sheet, int x, int y, int w, int h)
+    {
+        var rect = new Rectangle(x, y, w, h);
+        var data = sheet.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            int minx = int.MaxValue, miny = int.MaxValue, maxx = -1, maxy = -1;
+            var row = new byte[w * 4];
+            for (var yy = 0; yy < h; yy++)
+            {
+                Marshal.Copy(data.Scan0 + yy * data.Stride, row, 0, row.Length);
+                for (var xx = 0; xx < w; xx++)
+                    if (row[xx * 4 + 3] > 10)                    // A 通道（Format32Argb 是 BGRA 序）
+                    {
+                        if (xx < minx) minx = xx;
+                        if (xx > maxx) maxx = xx;
+                        if (yy < miny) miny = yy;
+                        if (yy > maxy) maxy = yy;
+                    }
+            }
+            return maxx < 0 ? (0, 0, 0, 0) : (x + minx, y + miny, maxx - minx + 1, maxy - miny + 1);
+        }
+        finally { sheet.UnlockBits(data); }
     }
 
     /// <summary>兜底帧（素材缺失/损坏时）：三组各三帧的简笔圆点 —— 保住三态语义
@@ -224,10 +258,13 @@ public sealed class TrayIcon : IDisposable
         using var bmp = new Bitmap(IconSize, IconSize, PixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(bmp);
         g.SmoothingMode = SmoothingMode.AntiAlias;
+        var d = (int)(IconSize * 0.625);               // 比例绘制：IconSize 变更不用回头改坐标
+        var o = (IconSize - d) / 2;
         using var b = new SolidBrush(color);
-        g.FillEllipse(b, 6, 6, 20, 20);
+        g.FillEllipse(b, o, o, d, d);
+        var e = (int)(IconSize * 0.125);
         using var w = new SolidBrush(Color.White);
-        g.FillEllipse(w, 14, 14, 4, 4);
+        g.FillEllipse(w, IconSize / 2 - e / 2, IconSize / 2 - e / 2, e, e);
         return bmp.GetHicon();
     }
 
