@@ -28,8 +28,15 @@
 
 ## 下载
 
-到 [Actions](https://github.com/fluctio-ai/vibemate/actions) 页（build 工作流）下载最新的
-`VibeMate-win-x64` 产物，解压即完整发布包（单文件 exe + 一键安装脚本）。
+正式发布到 [Releases](https://github.com/Fluctio-ai/vibemate/releases)（推荐，
+公开直链无需登录）；最新版直达
+[releases/latest](https://github.com/Fluctio-ai/vibemate/releases/latest)，
+下载 zip 解压即完整发布包（单文件 exe + 一键安装脚本）。
+
+开发快照在 [Actions](https://github.com/Fluctio-ai/vibemate/actions) 页（build
+工作流的 Artifact，需登录 GitHub 且 90 天过期）。
+
+发版流程：`git tag v2.1.x && git push origin v2.1.x` → CI 自动建 Release 附 zip。
 
 ## 快速开始（用户）
 
