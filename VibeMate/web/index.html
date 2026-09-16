@@ -537,6 +537,8 @@ async function pollDevLearn() {
   catch { return; }
   if (!L.learning) return;
   if (L.state === 'waiting') {
+    setCands('');   // 状态回 waiting 必须清面板：残留的 confirmed 按钮点了是空转
+                    // （后端已不在 confirmed，next 无操作）——「点了没反应」的元凶
     $('devlearn-note').textContent = (L.got && L.got !== '0x0000')
       ? `⚠ 按出了不同的键（收到 ${L.got}）—— 已重置，请只按你想学的那个键`
       : '监听中 —— 按一下遥控器上你想学的键';
@@ -557,6 +559,7 @@ async function devLearnNext() { try { await postJson('/api/learn', { action: 'ne
 // 候选键 → 复用现有学习表单（「新键干净态」只有 fillLearnForm 一份，不分叉；
 // 不点 learn-start —— 那会启用 keyevents 轮询，和设备学习的轮询抢着回填表单）
 window.cfgKey = (usageHex) => {
+  $('learnbox').classList.add('on');   // learnbox 默认 display:none：不加 'on' 表单弹了也看不见
   fillLearnForm(null, null, usageHex);
   $('learnbox').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 };
