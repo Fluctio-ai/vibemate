@@ -158,7 +158,8 @@
       <h3>未知遥控器接入（每键按 3 次确认）</h3>
       <p style="color:var(--mut)">不在设备库的遥控器：开始后按一下你想学的键，界面实时显示进度
         （1/3 → 2/3 → 3/3）；<b>同一个键</b>连按 3 次报文一致即确认，起名并配动作，
-        保存后自动接着学下一个。中途按了别的键（或有键盘在输入）会自动结束重来。
+        保存后自动接着学下一个。中途按了别的键（或有键盘在输入）会自动重置计数，
+        重新按你想学的键即可。
         学完的指纹/键名存在本机，欢迎导出回馈到设备库让下个用户免学。</p>
       <div class="toolbar">
         <button id="devlearn-start">开始设备学习</button>
@@ -410,10 +411,14 @@ document.querySelectorAll('nav a').forEach(a => {
 
 // ---- 状态 ----
 let CFG = null;
+let srvPid = null;   // 服务进程 pid：变了 = 服务重启过（升级/让位重启）——本页
+                     // JS 还是旧版，行为可能与新后端错位（吞点击/文案过期），自动刷新
 async function loadState() {
   let s;
   try { s = await (await fetch('/api/state')).json(); }
   catch { return; }   // 服务重启/瞬断：静默跳过本轮，下一轮轮询自愈（loadLog/pollEvents 同款）
+  if (srvPid !== null && srvPid !== s.pid) location.reload();
+  srvPid = s.pid;
   CFG = s.config;
   $('s-ver').textContent = 'v' + s.version;
   $('s-pid').textContent = s.pid;
