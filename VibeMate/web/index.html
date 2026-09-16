@@ -505,6 +505,11 @@ let devLearning = false, devPoll = null, lastCands = '';
 // 轮询写的区域只在内容变化时才动 DOM：confirmed 后每 300ms 无脑重写 innerHTML
 // 会在用户点击的间隙销毁按钮节点，click 落在已移除的元素上 —— onclick 被吞
 function setCands(html) { if (html !== lastCands) { lastCands = html; $('devlearn-cands').innerHTML = html; } }
+// 轮询节奏跟着状态机走：counting/waiting（等遥控器按键）300ms 一拍；
+// confirmed 即停（状态稳定等用户操作，空转打接口没意义）——「跳过/保存」回
+// waiting 再恢复，「结束」彻底停
+function startDevPoll() { if (!devPoll) devPoll = setInterval(pollDevLearn, 300); }
+function stopDevPoll() { clearInterval(devPoll); devPoll = null; }
 $('devlearn-start').onclick = async () => {
   try {
     const r = await postJson('/api/learn', { action: 'start' });
@@ -515,11 +520,11 @@ $('devlearn-start').onclick = async () => {
   $('devlearn-stop').style.display = '';
   $('devlearn-cands').style.display = '';
   $('devlearn-note').textContent = '监听中 —— 按一下遥控器上你想学的第一个键';
-  devPoll = setInterval(pollDevLearn, 300);
+  startDevPoll();
 };
 function endDevLearnUI() {
   devLearning = false;
-  clearInterval(devPoll); devPoll = null;
+  stopDevPoll();               // 彻底结束：轮询停（防抖里已判 null，重复调无害）
   lastCands = '';
   $('devlearn-start').style.display = '';
   $('devlearn-stop').style.display = 'none';
@@ -552,9 +557,13 @@ async function pollDevLearn() {
       `<button onclick="cfgKey('${L.usage}')">给这个键起名 + 配动作</button>` +
       `<button class="ghost" onclick="devLearnNext()">跳过，学下一个键</button></div>` +
       `<p style="color:var(--mut);margin:6px 0 0">保存动作后自动继续学下一个键（或点「结束」）</p></div>`);
+    stopDevPoll();   // confirmed 即停：等用户操作，回 waiting 的入口（跳过/保存）负责恢复
   }
 }
-async function devLearnNext() { try { await postJson('/api/learn', { action: 'next' }); } catch {} }
+async function devLearnNext() {
+  try { await postJson('/api/learn', { action: 'next' }); } catch {}
+  startDevPoll();   // 回 waiting：恢复监听下一个键
+}
 
 // 候选键 → 复用现有学习表单（「新键干净态」只有 fillLearnForm 一份，不分叉；
 // 不点 learn-start —— 那会启用 keyevents 轮询，和设备学习的轮询抢着回填表单）
@@ -777,7 +786,7 @@ $('learn-save').onclick = async () => {
     postJson('/api/learn', { action: 'save', labels: { [uKey]: keyName } })
       .then(rs => { if (rs.ok) $('devlearn-note').textContent = `「${keyName}」已存档 —— 继续按下一个键`; })
       .catch(() => {});
-    postJson('/api/learn', { action: 'next' }).catch(() => {});
+    postJson('/api/learn', { action: 'next' }).then(() => startDevPoll()).catch(() => {});
   }
   $('learn-form').style.display = 'none';
   $('learn-hint').textContent = '继续按下一个键…';
