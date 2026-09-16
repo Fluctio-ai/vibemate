@@ -262,7 +262,17 @@ public sealed class KeysRole : IDisposable
             Activity?.Invoke();
             lock (_learnLock)
             {
-                if (_learn is { } ls) { ls.Feed(b); return; }  // 学习中：只收集不映射
+                if (_learn is { } ls)
+                {
+                    // 排障观测点：学习识别不到按键时，先看有没有走到这里 ——
+                    // 没有这行日志 = DLL 根本没上报（hook/过滤问题）
+                    if (!ls.SeenAny)
+                    {
+                        ls.SeenAny = true;
+                        _ = _log($"按键：学习首份报告 len={b.Length} [{string.Join(' ', b.Select(x => x.ToString("X2")))}]");
+                    }
+                    ls.Feed(b); return;  // 学习中：只收集不映射
+                }
             }
             var p = Profile;
             if (n != p.Len || b[0] != (byte)p.Id || p.Off + p.W > n) return;
@@ -279,7 +289,15 @@ public sealed class KeysRole : IDisposable
         {
             var p = line[3..].Split(' ');
             if (p.Length == 3 && long.TryParse(p[0], out var total))
+            {
                 _mapper.NoteStats(total);
+                // 学习排障观测点：total=流经 hook 的报告数（20s 一拍）。学习时
+                // total 不涨 = DLL 没捕获到这台设备的读路径；涨但无 report = 过滤/变化判定问题
+                bool learning;
+                lock (_learnLock) learning = _learn is not null;
+                if (learning)
+                    _ = _log($"按键：学习心跳 total={total} sent={p[1]} blocked={p[2]}");
+            }
         }
     }
 
@@ -654,6 +672,7 @@ public sealed class KeysRole : IDisposable
         internal ushort Usage;                   // counting/confirmed 的目标键
         internal ushort GotOther;                // 上次重置时实际收到的键（0=无；下个有效按键清零）
         internal int Count;                      // 已记录次数（同一键）
+        internal bool SeenAny;                   // 学习会话收到过 DLL 上报（排障观测）
         internal ReportProfile? Profile;         // 第一组有效按键对推导出的指纹
 
         /// <summary>喂一份 DLL 上报的报告（全量流）。返回 = 状态是否变化（前端要刷新）。</summary>
