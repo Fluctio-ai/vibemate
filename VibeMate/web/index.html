@@ -496,7 +496,10 @@ async function postJson(url, body) {
 async function postConfig(patch) { return postJson('/api/config', patch); }
 
 // ---- 设备学习（未知遥控器：串行单键，每键按 3 次一致才确认）----
-let devLearning = false, devPoll = null;
+let devLearning = false, devPoll = null, lastCands = '';
+// 轮询写的区域只在内容变化时才动 DOM：confirmed 后每 300ms 无脑重写 innerHTML
+// 会在用户点击的间隙销毁按钮节点，click 落在已移除的元素上 —— onclick 被吞
+function setCands(html) { if (html !== lastCands) { lastCands = html; $('devlearn-cands').innerHTML = html; } }
 $('devlearn-start').onclick = async () => {
   try {
     const r = await postJson('/api/learn', { action: 'start' });
@@ -512,6 +515,7 @@ $('devlearn-start').onclick = async () => {
 function endDevLearnUI() {
   devLearning = false;
   clearInterval(devPoll); devPoll = null;
+  lastCands = '';
   $('devlearn-start').style.display = '';
   $('devlearn-stop').style.display = 'none';
   $('devlearn-cands').style.display = 'none';
@@ -527,21 +531,20 @@ async function pollDevLearn() {
   try { L = await (await fetch('/api/learn')).json(); }   // 轻量专用端点，不拉全量 state
   catch { return; }
   if (!L.learning) return;
-  const el = $('devlearn-cands');
   if (L.state === 'waiting') {
     $('devlearn-note').textContent = (L.got && L.got !== '0x0000')
       ? `⚠ 按出了不同的键（收到 ${L.got}）—— 已重置，请只按你想学的那个键`
       : '监听中 —— 按一下遥控器上你想学的键';
   } else if (L.state === 'counting') {
-    el.innerHTML = `<div style="margin:4px 0"><span class="pill">${L.usage}</span>` +
+    setCands(`<div style="margin:4px 0"><span class="pill">${L.usage}</span>` +
       ` 已记录 <b>${L.count} / 3</b> —— 继续按<b>同一个键</b>` +
-      `<div style="letter-spacing:6px;color:var(--acc);font-size:20px">${'●'.repeat(L.count)}${'○'.repeat(3 - L.count)}</div></div>`;
+      `<div style="letter-spacing:6px;color:var(--acc);font-size:20px">${'●'.repeat(L.count)}${'○'.repeat(3 - L.count)}</div></div>`);
   } else if (L.state === 'confirmed') {
-    el.innerHTML = `<div style="margin:4px 0"><span class="pill">${L.usage}</span> ✅ 三次报文一致，按键确认` +
+    setCands(`<div style="margin:4px 0"><span class="pill">${L.usage}</span> ✅ 三次报文一致，按键确认` +
       `<div class="toolbar" style="margin-top:8px">` +
       `<button onclick="cfgKey('${L.usage}')">给这个键起名 + 配动作</button>` +
       `<button class="ghost" onclick="devLearnNext()">跳过，学下一个键</button></div>` +
-      `<p style="color:var(--mut);margin:6px 0 0">保存动作后自动继续学下一个键（或点「结束」）</p></div>`;
+      `<p style="color:var(--mut);margin:6px 0 0">保存动作后自动继续学下一个键（或点「结束」）</p></div>`);
   }
 }
 async function devLearnNext() { try { await postJson('/api/learn', { action: 'next' }); } catch {} }
