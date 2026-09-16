@@ -98,8 +98,7 @@ internal static class Program
             async msg => { Log("VOICE", msg); await Task.CompletedTask; },
             () =>
             {
-                var t = config.Get("remote_addr", "").Trim()
-                    .Replace(":", "").Replace("-", "");
+                var t = KeysRole.Mac12(config.Get("remote_addr", ""));
                 return ulong.TryParse(t, System.Globalization.NumberStyles.HexNumber,
                                       null, out var a) ? a : null;
             },
@@ -137,7 +136,10 @@ internal static class Program
 
         var keys = new KeysRole(
             async msg => { Log("KEYS", msg); await Task.CompletedTask; },
-            () => config.Snapshot()["keys"]!.AsObject());
+            () => config.Snapshot()["keys"]!.AsObject(),
+            () => config.Get("remote_addr", ""),
+            // devices 键与 remote_addr 同格式（带冒号 MAC），SetDevice 写入方保证一致
+            () => (config.Snapshot()["devices"] as JsonObject)?[config.Get("remote_addr", "")] as JsonObject);
         keys.KeyEvent += OnKeyEvent;
         keys.Activity += voice.Poke;          // 遥控器按键活动 → 语音立刻重连
         voice.VoiceKeyEvent += down => keys.FireVirtual(0xFFFE, down);   // 语音键 → 虚拟 usage
@@ -159,15 +161,19 @@ internal static class Program
                                           ["ready"] = keys.Ready,
                                           ["note"] = keys.Note,
                                       },
+                                      ["learn"] = keys.LearnSnapshot(),
                                       ["cable"] = new JsonObject
                                       {
                                           ["installed"] = CableSetup.Installed(),
                                       },
                                       ["config"] = config.Snapshot(),
                                   },
-                                  EventsSince);
+                                  EventsSince,
+                                  keys);
         voice.VoiceKeyEnabled = config.Snapshot()["keys"]?["voice"] is null;
         keys.ReloadMapping();               // 启动即装载映射表（ConfigChanged 只覆盖后续变更）
+        keys.ReloadProfile();               // 启动即装载报告指纹（同上）
+        DeviceDb.RefreshAsync();            // 已知设备表后台刷新（内置兜底，失败静默）
         http.Start();
         voice.Start();
         keys.Start();
@@ -256,6 +262,7 @@ internal static class Program
             voice.ReloadKey();                // 语音键目标即时生效
             voice.ApplyAudio();               // 增益/AGC/直通即时生效
             keys.ReloadMapping();             // 按键映射即时生效（block 表随下轮会话）
+            keys.ReloadProfile();             // 报告指纹即时生效（切设备/学习保存）
             // 互斥：语音键被映射成普通键 → VoiceKey 停发（避免双发）
             voice.VoiceKeyEnabled = cfg["keys"]?["voice"] is null;
         };

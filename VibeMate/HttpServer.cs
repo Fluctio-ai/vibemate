@@ -20,6 +20,7 @@ public sealed class HttpServer
     private readonly ConfigService _config;
     private readonly Func<JsonObject> _stateBuilder;
     private readonly Func<int, JsonObject> _eventsProvider;
+    private readonly KeysRole? _keys;           // 学习模式控制（start/stop；快照走 stateBuilder）
     private Thread? _thread;
     private volatile bool _running;
 
@@ -27,13 +28,15 @@ public sealed class HttpServer
 
     public HttpServer(int port, string webRoot, string logPath, ConfigService config,
                       Func<JsonObject> stateBuilder,
-                      Func<int, JsonObject>? eventsProvider = null)
+                      Func<int, JsonObject>? eventsProvider = null,
+                      KeysRole? keys = null)
     {
         Port = port;
         _webRoot = webRoot;
         _logPath = logPath;
         _config = config;
         _stateBuilder = stateBuilder;
+        _keys = keys;
         _eventsProvider = eventsProvider ?? (_ => new JsonObject { ["events"] = new JsonArray(), ["last"] = 0 });
         _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
     }
@@ -90,6 +93,12 @@ public sealed class HttpServer
                 case "/api/state":
                     ReplyJson(ctx, 200, _stateBuilder());
                     return;
+                case "/api/learn":
+                    // 学习状态专用轻量端点：前端学习期间 300ms 轮询只要这几个字段，
+                    // 走 /api/state 会每次全配置深拷贝+序列化（HTTP 单线程串行，会顶住）
+                    ReplyJson(ctx, 200, _keys?.LearnSnapshot()
+                              ?? new JsonObject { ["learning"] = false });
+                    return;
                 case "/api/config":
                     ReplyJson(ctx, 200, _config.Snapshot());
                     return;
@@ -121,14 +130,18 @@ public sealed class HttpServer
             }
         }
         else if (req.HttpMethod == "POST" && path is "/api/config" or "/api/capture/start"
-                 or "/api/autostart" or "/api/cable/install")
+                 or "/api/autostart" or "/api/cable/install" or "/api/learn")
         {
             if (!Guard(ctx)) return;
+            if (path == "/api/learn")
+            {
+                ServeLearn(ctx);
+                return;
+            }
             if (path == "/api/autostart")
             {
-                using var sr0 = new StreamReader(req.InputStream, Encoding.UTF8);
-                var b0 = sr0.ReadToEnd();
-                var on = (JsonNode.Parse(b0) as JsonObject)?["enabled"]?.GetValue<bool>() ?? false;
+                if (ReadJsonBody(ctx) is not { } j0) return;
+                var on = j0["enabled"]?.GetValue<bool>() ?? false;
                 var okA = on ? AutostartCreate() : AutostartDelete();
                 ReplyJson(ctx, 200, new JsonObject
                 {
@@ -171,27 +184,94 @@ public sealed class HttpServer
                 });
                 return;
             }
-            using var sr = new StreamReader(req.InputStream, Encoding.UTF8);
-            var body = sr.ReadToEnd();
-            if (body.Length > 1_000_000)
-            {
-                ReplyJson(ctx, 413, new JsonObject { ["ok"] = false, ["msg"] = "请求体过大（上限 1MB）" });
-                return;
-            }
-            JsonNode? node;
-            try { node = JsonNode.Parse(body); }
-            catch { ReplyJson(ctx, 400, new JsonObject { ["ok"] = false, ["msg"] = "JSON 解析失败" }); return; }
-            if (node is not JsonObject patch)
-            {
-                ReplyJson(ctx, 400, new JsonObject { ["ok"] = false, ["msg"] = "配置格式不对" });
-                return;
-            }
+            if (ReadJsonBody(ctx) is not { } patch) return;
             var (ok, msg) = _config.Apply(patch);
             ReplyJson(ctx, 200, new JsonObject { ["ok"] = ok, ["msg"] = msg });
             return;
         }
         ctx.Response.StatusCode = 404;
         ReplyJson(ctx, 404, new JsonObject { ["ok"] = false, ["msg"] = "not found" });
+    }
+
+    /// <summary>读 POST body 并解析为 JsonObject（含 1MB 上限检查）。
+    /// 已回复错误（413/400）时返回 null —— 调用方直接 return。
+    /// config 主路径 / autostart / learn 三处共用，上限与错误语义不分叉。</summary>
+    private static JsonObject? ReadJsonBody(HttpListenerContext ctx)
+    {
+        string body;
+        try
+        {
+            using var sr = new StreamReader(ctx.Request.InputStream, Encoding.UTF8);
+            body = sr.ReadToEnd();
+        }
+        catch { body = ""; }
+        if (body.Length > 1_000_000)
+        {
+            ReplyJson(ctx, 413, new JsonObject { ["ok"] = false, ["msg"] = "请求体过大（上限 1MB）" });
+            return null;
+        }
+        try
+        {
+            if (JsonNode.Parse(body) is JsonObject o) return o;
+        }
+        catch { }
+        ReplyJson(ctx, 400, new JsonObject { ["ok"] = false, ["msg"] = "JSON 解析失败" });
+        return null;
+    }
+
+    /// <summary>学习模式控制：start/stop/next 切换学习状态；save 把指纹+已命名键
+    /// 落进 devices[当前remote_addr]（增量合并，逐键保存互不冲掉）。
+    /// ★ 指纹是服务端学习会话推导的（KeysRole.LearnProfile 权威来源），不经
+    ///   前端回传 —— 服务端产物绕道浏览器一圈就成了不可信输入。</summary>
+    private void ServeLearn(HttpListenerContext ctx)
+    {
+        if (_keys is null)
+        {
+            ReplyJson(ctx, 200, new JsonObject { ["ok"] = false, ["msg"] = "按键角色未就绪" });
+            return;
+        }
+        if (ReadJsonBody(ctx) is not { } j) return;
+        void ReplyLearn(JsonObject learn) =>
+            ReplyJson(ctx, 200, new JsonObject { ["ok"] = true, ["learn"] = learn });
+        switch (j["action"]?.GetValue<string>() ?? "")
+        {
+            case "start":
+                ReplyLearn(_keys.LearnStart());
+                return;
+            case "stop":
+                ReplyLearn(_keys.LearnStop());
+                return;
+            case "next":   // 确认一键并保存动作后：状态机回 waiting，继续学下一个键
+                ReplyLearn(_keys.LearnNext());
+                return;
+            case "save":
+            {
+                var addr = _config.Get("remote_addr", "");
+                if (addr.Length == 0)
+                {
+                    ReplyJson(ctx, 200, new JsonObject { ["ok"] = false, ["msg"] = "先在设置页选中遥控器地址" });
+                    return;
+                }
+                var dev = new JsonObject();
+                if (_keys.LearnProfile() is { } pp) dev["report"] = pp;
+                if (j["labels"] is JsonObject ll) dev["labels"] = ll.DeepClone();
+                if (dev.Count == 0)
+                {
+                    ReplyJson(ctx, 200, new JsonObject { ["ok"] = false, ["msg"] = "没有可保存的内容" });
+                    return;
+                }
+                var (okD, msgD) = _config.SetDevice(addr, dev);
+                ReplyJson(ctx, 200, new JsonObject
+                {
+                    ["ok"] = okD,
+                    ["msg"] = okD ? "已存入设备档案（指纹+键名）" : msgD,
+                });
+                return;
+            }
+            default:
+                ReplyJson(ctx, 200, new JsonObject { ["ok"] = false, ["msg"] = "未知 action" });
+                return;
+        }
     }
 
     // ---------- 计划任务 / 开机自启（任务名唯一出处：登录触发 + 最高权限）----------
@@ -308,7 +388,8 @@ public sealed class HttpServer
     /// 枚举已配对的蓝牙设备（名称 + MAC）—— 设置页的 remote_addr 下拉数据源。
     /// 注册表法。实测形态：BTHLEDevice 下是「{服务GUID}_Dev_VID&xx_PID&xx_REV&xx_MAC」
     /// 的服务节点（同一设备 8 个服务 = 8 个键，按尾部 MAC 去重聚合）；
-    /// BTHENUM（经典蓝牙）下是「Dev_MAC&容器」形态。
+    /// BTHENUM（经典蓝牙，耳机/音箱在这）下是「Dev_MAC&容器」形态 —— 刻意不枚举：
+    /// 经典设备没有 GATT，语音链路连不上，混进下拉纯属噪音。
     /// ★ 设备名：优先 BTHPORT\Parameters\Devices\<MAC> 的 Name 值（蓝牙设置页
     ///   显示的名字，如「Chromecast Remote」）；服务实例的 FriendlyName 兜底。
     /// </summary>
@@ -340,37 +421,49 @@ public sealed class HttpServer
                     }
             }
 
-            foreach (var rootName in new[]
-                     { @"SYSTEM\CurrentControlSet\Enum\BTHLEDevice",
-                       @"SYSTEM\CurrentControlSet\Enum\BTHENUM" })
+            // ★ 只枚举 BTHLEDevice（BLE GATT）：只有 BLE 设备才会在它下面建 GATT
+            //   服务节点。BTHPORT 名字表是全量（经典+BLE），单用它会把配对过的
+            //   耳机/手机全列进来 —— 用 bleMacs 白名单把没进 BTHLEDevice 的滤掉。
+            // ★ BTHLEDevice 是唯一上榜依据（BLE GATT 设备才建服务节点）；同设备
+            //   多服务节点按 MAC 聚合，vid/pid 只记首次。BTHPORT 名字表只是名字
+            //   的来源（含经典蓝牙，不决定谁上榜）—— 三集合制衡反转成单一权威源。
+            var devices = new Dictionary<string, JsonObject>(StringComparer.OrdinalIgnoreCase);
+            using (var root = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                       @"SYSTEM\CurrentControlSet\Enum\BTHLEDevice"))
             {
-                using var root = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(rootName);
-                if (root is null) continue;
-                foreach (var node in root.GetSubKeyNames())
-                {
-                    // 取最后一个 '_' 之后的 12 位 hex 段（两种形态通吃）
-                    var tail = node.Contains('_') ? node[(node.LastIndexOf('_') + 1)..] : node;
-                    if (tail.Length != 12 || !tail.All(char.IsLetterOrDigit)) continue;
-                    var key = tail.ToUpperInvariant();
-                    if (names.ContainsKey(key)) continue;          // 已有名字（或已聚合）
-                    var mac = string.Join(':', Enumerable.Range(0, 6)
-                        .Select(i => tail.Substring(i * 2, 2).ToUpperInvariant()));
-                    var name = "";
-                    using var inst = root.OpenSubKey(node);
-                    if (inst is not null)
-                        foreach (var sub in inst.GetSubKeyNames())
+                if (root is not null)
+                    foreach (var node in root.GetSubKeyNames())
+                    {
+                        var key = KeysRole.BthleMacOf(node);
+                        if (key is null || devices.ContainsKey(key)) continue;
+                        var name = names.GetValueOrDefault(key, "");
+                        if (name.Length == 0)
                         {
-                            using var k = inst.OpenSubKey(sub);
-                            if (k?.GetValue("FriendlyName") is string s && s.Length > 0) { name = s; break; }
+                            using var inst = root.OpenSubKey(node);
+                            if (inst is not null)
+                                foreach (var sub in inst.GetSubKeyNames())
+                                {
+                                    using var k = inst.OpenSubKey(sub);
+                                    if (k?.GetValue("FriendlyName") is string s && s.Length > 0) { name = s; break; }
+                                }
                         }
-                    names[key] = name;
-                }
-            }
-            foreach (var (key, name) in names)
-            {
-                var mac = string.Join(':', Enumerable.Range(0, 6)
-                    .Select(i => key.Substring(i * 2, 2)));
-                arr.Add(new JsonObject { ["name"] = name, ["addr"] = mac });
+                        var mac = string.Join(':', Enumerable.Range(0, 6)
+                            .Select(i => key.Substring(i * 2, 2)));
+                        var item = new JsonObject { ["name"] = name, ["addr"] = mac };
+                        if (KeysRole.BthleVidPidOf(node) is { } vp)
+                        {
+                            item["vid"] = vp.Vid;
+                            item["pid"] = vp.Pid;
+                            // 已知设备：预填型号 + 指纹 + 键名（免学习的便利层；未命中走学习）
+                            if (DeviceDb.Lookup(vp.Vid, vp.Pid) is { } known)
+                            {
+                                item["model"] = known["model"]?.GetValue<string>();
+                                item["voice"] = known["voice"]?.GetValue<string>();
+                            }
+                        }
+                        devices[key] = item;
+                        arr.Add(item);
+                    }
             }
         }
         catch (Exception e)

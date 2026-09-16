@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "_comment": "VibeMate 已知遥控器指纹库。keys 是预填的键名标签（usage→名字），未收录设备走界面学习模式逐键学习；语音能力=ATVV 运行时探测，不依赖本表。新设备欢迎 PR 补充（学习页可导出指纹）。RC003 报文数据来源：axonkey docs/WINDOWS_RC003_EXTRA_KEYS.md 2026-09-09 真机实测。",
+  "devices": [
+    {
+      "vid": "18d1",
+      "pid": "9450",
+      "brand": "Google",
+      "model": "Chromecast Voice Remote",
+      "voice": "atvv",
+      "report": { "len": 3, "id": 2, "off": 1, "w": 2 },
+      "keys": {
+        "0x019E": "power",
+        "0x0189": "input",
+        "0x0042": "up",
+        "0x0043": "down",
+        "0x0044": "left",
+        "0x0045": "right",
+        "0x0041": "ok",
+        "0x0224": "back",
+        "0x0223": "home",
+        "0x00E9": "volup",
+        "0x00EA": "voldown",
+        "0x00E2": "mute",
+        "0x0077": "youtube",
+        "0x0078": "netflix"
+      }
+    },
+    {
+      "vid": "2717",
+      "pid": "32b8",
+      "brand": "Xiaomi",
+      "model": "小米蓝牙遥控器2 Pro (RC003)",
+      "voice": "atvv",
+      "report": { "len": 9, "id": 1, "off": 3, "w": 1 },
+      "keys": {
+        "0xF1": "back",
+        "0x80": "volup",
+        "0x81": "voldown",
+        "0x28": "ok",
+        "0x4A": "home",
+        "0x4F": "right",
+        "0x50": "left",
+        "0x51": "down",
+        "0x52": "up"
+      }
+    }
+  ]
+}

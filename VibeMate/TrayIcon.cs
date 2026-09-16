@@ -155,24 +155,14 @@ public sealed class TrayIcon : IDisposable
         {
             using var sheet = LoadResourceBitmap();
             if (sheet is null) { BuildFallbackFrames(); return; }
-            // 内容框的扫描只锁一次整图、九格共享（逐格 LockBits 全图 = 9 份 MB 级冗余拷贝）
-            var bd = sheet.LockBits(new Rectangle(0, 0, sheet.Width, sheet.Height),
-                                    ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-            var buf = new byte[bd.Stride * sheet.Height];
-            Marshal.Copy(bd.Scan0, buf, 0, buf.Length);
+            // 素材已是规整宫格（品红底素材经管线归一化：抠像+逐图标居中重排，
+            // 见 gitignore 的处理脚本；各帧位置/大小齐整）—— 直接整格映射即可
             var tw = sheet.Width / 3;
             var th = sheet.Height / 3;
-            var boxes = new (int x, int y, int w, int h)[3, Frames];
             for (var col = 0; col < 3; col++)          // 列 = 状态组：0 待机 / 1 语音 / 2 按键
                 for (var row = 0; row < Frames; row++) // 行 = 帧
-                    boxes[col, row] = ContentBox(buf, bd.Stride, col * tw, row * th, tw, th);
-            // ★ 必须解锁后再 DrawImage：GDI+ 对锁定位图的一切绘制都抛
-            //   "Bitmap region is already locked"（2026-09-16 托盘变蓝圈的元凶）
-            sheet.UnlockBits(bd);
-            for (var col = 0; col < 3; col++)
-                for (var row = 0; row < Frames; row++)
                 {
-                    var h = RenderFrame(sheet, boxes[col, row]);
+                    var h = RenderFrame(sheet, col * tw, row * th, tw, th);
                     _handles[col, row] = h;
                     _frames[col, row] = Icon.FromHandle(h);
                 }
@@ -194,43 +184,20 @@ public sealed class TrayIcon : IDisposable
         catch { return null; }
     }
 
-    /// <summary>切一格：内容框 → 等比缩放（长边微超画布 1px）居中绘制 → HICON。</summary>
-    private static IntPtr RenderFrame(Bitmap sheet, (int x, int y, int w, int h) box)
+    /// <summary>切一格：整格 → 画布（格→IconSize 统一变换）。大小/位置恒定 ——
+    /// 帧间齐整由素材管线保证（归一化宫格），运行时零补偿。</summary>
+    private static IntPtr RenderFrame(Bitmap sheet, int x, int y, int w, int h)
     {
-        var (x, y, w, h) = box;
         using var bmp = new Bitmap(IconSize, IconSize, PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(bmp))
         {
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
             g.PixelOffsetMode = PixelOffsetMode.Half;
-            const int grow = 1;                     // 微超画布 1px：视觉大一点，溢出自动裁掉
-            var scale = Math.Min((float)(IconSize + grow) / w, (float)(IconSize + grow) / h);
-            var dw = w * scale;
-            var dh = h * scale;
             g.DrawImage(sheet,
-                new RectangleF((IconSize - dw) / 2f, (IconSize - dh) / 2f, dw, dh),
+                new RectangleF(0, 0, IconSize, IconSize),
                 new RectangleF(x, y, w, h), GraphicsUnit.Pixel);
         }
         return bmp.GetHicon();
-    }
-
-    /// <summary>格内找有内容（alpha&gt;8）的包围盒 —— 逐像素精确扫描：启动一次性、
-    /// 每格 ~29K 次比较（微秒级），无粗扫就不需要补余量。空格兜底为整格。</summary>
-    private static (int x, int y, int w, int h) ContentBox(
-        byte[] buf, int stride, int tx, int ty, int tw, int th)
-    {
-        var minX = int.MaxValue; var minY = int.MaxValue;
-        var maxX = -1; var maxY = -1;
-        for (var yy = ty; yy < ty + th; yy++)
-            for (var xx = tx; xx < tx + tw; xx++)
-                if (buf[yy * stride + xx * 4 + 3] > 8)   // BGRA：alpha 有值即内容
-                {
-                    if (xx < minX) minX = xx;
-                    if (xx > maxX) maxX = xx;
-                    if (yy < minY) minY = yy;
-                    if (yy > maxY) maxY = yy;
-                }
-        return maxX < minX || maxY < minY ? (tx, ty, tw, th) : (minX, minY, maxX - minX + 1, maxY - minY + 1);
     }
 
     /// <summary>兜底帧（素材缺失/损坏时）：三组各三帧的简笔圆点 —— 保住三态语义

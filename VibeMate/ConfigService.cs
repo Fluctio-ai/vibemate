@@ -75,12 +75,9 @@ public sealed class ConfigService : IDisposable
         var (valid, why) = Validate(merged);
         if (!valid) return (false, why);
 
-        lock (_lock)
-        {
-            _root = merged;
-            WriteAtomic(_root);
-        }
-        ConfigChanged?.Invoke(Snapshot());
+        lock (_lock) { _root = merged; }        // 内存先换（读端立刻一致）
+        WriteAtomic(merged);                    // 磁盘写锁外：读端（按键热路径/轮询）不陪 IO 排队
+        ConfigChanged?.Invoke(merged);          // 只读约定（见事件注释），省一次全树深拷贝
         return (true, "saved");
     }
 
@@ -96,6 +93,37 @@ public sealed class ConfigService : IDisposable
         if (cfg["lang"] is { } l && l.GetValue<string>() is not ("zh" or "en"))
             return (false, "lang 只能是 zh|en");
         return (true, "");
+    }
+
+    /// <summary>
+    /// 学习成果落库：devices[addr] 增量合并（report 指纹整体替换、labels 逐键合并）。
+    /// 学习是逐键保存的 —— 整树替换会互相冲掉，必须 merge。
+    /// </summary>
+    public (bool Ok, string Msg) SetDevice(string addr, JsonObject node)
+    {
+        if (string.IsNullOrWhiteSpace(addr)) return (false, "设备地址为空");
+        JsonObject merged;
+        lock (_lock)
+        {
+            merged = Snapshot();                // Monitor 可重入：锁内直接复用既有深拷贝
+            var devices = merged["devices"] as JsonObject ?? new JsonObject();
+            var cur = devices[addr] as JsonObject ?? new JsonObject();
+            foreach (var (k, v) in node)
+            {
+                if (k == "labels" && v is JsonObject labels
+                    && cur["labels"] is JsonObject curLabels)
+                {
+                    foreach (var (lk, lv) in labels) curLabels[lk] = lv?.DeepClone();
+                }
+                else cur[k] = v?.DeepClone();
+            }
+            devices[addr] = cur;
+            merged["devices"] = devices;
+            _root = merged;
+        }
+        WriteAtomic(merged);                    // 磁盘写锁外（同 Apply：读端不陪 IO 排队）
+        ConfigChanged?.Invoke(merged);
+        return (true, "saved");
     }
 
     // ---------- 落盘 ----------

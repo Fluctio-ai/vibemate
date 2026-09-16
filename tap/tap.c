@@ -9,12 +9,19 @@
  *
  * 管道：\\.\pipe\vibemote-keys-<本进程PID>（DLL=server，主程序=client）
  * 协议（行式，\n 结尾，ASCII）：
- *   DLL → APP:  report <hex> [<hex> <hex>]     内容有变化才发
- *               hb <total> <sent> <blocked>     心跳 20s
+ *   DLL → APP:  report <len> <b0> <b1> ...    内容有变化才发（len=字节数，1-64）
+ *               hb <total> <sent> <blocked>   心跳 20s
  *               ack-block <n>
- *   APP → DLL:  block <usage4位hex> ...         更新清位表
- *               ping                            立即回 hb
- *               unload                          注销钩子并自卸
+ *   APP → DLL:  filter <len> <id>             报告指纹（len=0 → 学习模式全量上报）
+ *               block @<off>:<w> <usage...>   在偏移 off 处按 w 字节 LE 清位
+ *               ping                          立即回 hb
+ *               unload                        注销钩子并自卸
+ *
+ * ★ 指纹（filter 的长度/ReportID、block 的偏移/宽度）全部由主程序按设备下发，
+ *   DLL 不内置任何型号知识 —— 支持新遥控器不需要改这里。默认值 = Google
+ *   遥控器（3 字节 / id 0x02 / usage 在 b[1..2] LE），只用于「主程序下发前」
+ *   的向后兼容。学习模式（filter 0）全量上报且绝不清位（同一宿主还有别的
+ *   蓝牙键鼠，清位会弄坏它们）。
  *
  * 生命周期（★ 用户验收点）：
  *   · 防重复注入：CreateNamedPipe 带 FILE_FLAG_FIRST_PIPE_INSTANCE，
@@ -28,6 +35,7 @@
 #include <windows.h>
 #include <sddl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "MinHook.h"
 
 /* 诊断日志（排障用；正式版可保留——文件小、只 append） */
@@ -70,7 +78,14 @@ static volatile LONG g_blocked = 0;            /* 清位次数 */
 static volatile USHORT g_block[MAX_BLOCK];     /* 清位表（usage 值） */
 static volatile LONG g_block_n = 0;
 
-static char g_last_hex[16] = "";               /* 上一份报告（内容变化才发） */
+/* 报告指纹（主程序下发；默认 Google 遥控器，见文件头协议注释） */
+static volatile LONG g_flt_len = 3;            /* 匹配的报告长度；0 = 学习模式全量 */
+static volatile LONG g_flt_id  = 0x02;         /* 匹配的 Report ID（b[0]） */
+static volatile LONG g_blk_off = 1;            /* usage 槽起始偏移 */
+static volatile LONG g_blk_w   = 2;            /* usage 宽度（1 或 2 字节，LE） */
+
+#define MAX_RPT 64
+static char g_last_hex[MAX_RPT * 3 + 8];       /* 上一份报告（长度+内容都变才发） */
 
 /* ---------------- 钩子 ---------------- */
 typedef LONG NTSTATUS;                          /* mingw 头里没带，自己定义 */
@@ -92,13 +107,16 @@ static void send_line(const char *line)
     LeaveCriticalSection(&g_send_cs);
 }
 
-static void hex3(const BYTE *p, char *out /*>=12*/)
+static void hexn(const BYTE *p, int n, char *out /* >= n*3+1 */)
 {
     static const char hx[] = "0123456789abcdef";
-    out[0] = hx[p[0] >> 4]; out[1] = hx[p[0] & 15]; out[2] = ' ';
-    out[3] = hx[p[1] >> 4]; out[4] = hx[p[1] & 15]; out[5] = ' ';
-    out[6] = hx[p[2] >> 4]; out[7] = hx[p[2] & 15];
-    out[8] = '\0';
+    for (int i = 0; i < n; i++)
+    {
+        *out++ = hx[p[i] >> 4];
+        *out++ = hx[p[i] & 15];
+        *out++ = ' ';
+    }
+    out[-1] = '\0';                            /* 尾部空格换 \0 */
 }
 
 static int usage_blocked(USHORT u)
@@ -119,30 +137,46 @@ static NTSTATUS NTAPI detour_NtDevIoCtl(HANDLE fh, HANDLE ev, PVOID apc, PVOID c
        只有 IOCTL 命中才在返回后碰输出缓冲区（此时数据已填好）。 */
     const BOOL cap = (code == READ_IOCTL);
     NTSTATUS r = g_orig(fh, ev, apc, ctx, iosb, code, inbuf, inlen, outbuf, outlen);
-    if (!cap || r != 0 || outbuf == NULL || outlen != 3)
+    if (!cap || r != 0 || outbuf == NULL || outlen < 1 || outlen > MAX_RPT)
         return r;
 
+    /* 指纹过滤：flen>0 = 常态（长度+ReportID 都对上才是遥控器报告）；
+       flen==0 = 学习模式（全量上报，交给主程序按「按下/松开对比」推导指纹） */
+    LONG flen = g_flt_len;
     BYTE *b = (BYTE *)outbuf;
-    InterlockedIncrement(&g_total);
-    if (b[0] != 0x02)                          /* 不是遥控器那份 3 字节报告 */
+    if (flen > 0 && ((LONG)outlen != flen || b[0] != (BYTE)g_flt_id))
         return r;
+    InterlockedIncrement(&g_total);
 
-    char hex[12];
-    hex3(b, hex);
-    if (lstrcmpA(hex, g_last_hex) != 0) {      /* 内容变化才上报（空闲帧不刷屏） */
+    char hex[MAX_RPT * 3 + 8];
+    int n = (int)outlen;
+    hexn(b, n, hex);
+    /* 内容变化才上报（空闲帧不刷屏）。长度一起进缓存：不同长度交替的流
+       （学习模式下混着鼠标/键盘报告）不会互相误判为「变化」 */
+    if (lstrcmpA(hex, g_last_hex) != 0)
+    {
+        char line[MAX_RPT * 3 + 32];
+        wsprintfA(line, "report %d %s\n", n, hex);
         lstrcpyA(g_last_hex, hex);
-        char line[64];
-        wsprintfA(line, "report %s\n", hex);
         InterlockedIncrement(&g_sent);
         send_line(line);
     }
 
-    /* 清位：已映射的 usage 两字节写 0 —— 必须在报告快照发出之后 */
-    USHORT u = (USHORT)(b[1] | (b[2] << 8));
-    if (u && usage_blocked(u)) {
-        b[1] = 0;
-        b[2] = 0;
-        InterlockedIncrement(&g_blocked);
+    /* 清位：已映射的 usage 槽位写 0 —— 必须在报告快照发出之后。
+       学习模式（flen==0）绝不清位：全量流里混着同一宿主里其他蓝牙键鼠
+       的报告，动了会把人家的输入弄坏。
+       w 的合法域钳制在 apply_block 解析点做 —— 这里是每个蓝牙报告都走的
+       热路径，只留随报告长度变化的越界检查。 */
+    if (flen > 0)
+    {
+        LONG off = g_blk_off, w = g_blk_w;
+        if (off < 0 || off + w > (LONG)outlen) return r;
+        USHORT u = (USHORT)(w == 1 ? b[off] : (b[off] | (b[off + 1] << 8)));
+        if (u && usage_blocked(u))
+        {
+            for (LONG i = 0; i < w; i++) b[off + i] = 0;
+            InterlockedIncrement(&g_blocked);
+        }
     }
     return r;
 }
@@ -155,8 +189,46 @@ static void send_hb(void)
     send_line(line);
 }
 
+static void apply_filter(const char *args)
+{
+    /* filter <len> <id> —— 报告指纹；len=0 进入学习模式（全量上报，不清位） */
+    char *end = NULL;
+    unsigned long len = strtoul(args, &end, 10);
+    while (*end == ' ') end++;
+    char *end2 = NULL;
+    unsigned long id = strtoul(end, &end2, 16);
+    if (end2 == end) return;                   /* 参数不全：不动现有指纹 */
+    InterlockedExchange(&g_flt_len, (LONG)len);
+    InterlockedExchange(&g_flt_id, (LONG)id);
+    char line[32];
+    wsprintfA(line, "ack-filter %lu %lu\n", len, id);
+    send_line(line);
+}
+
 static void apply_block(const char *args)
 {
+    /* 语法：block @<off>:<w> <usage>... —— 槽偏移/宽度由主程序按设备指纹下发。
+       （不带 @ 前缀 = 旧语法，偏移沿用现值，兼容早期主程序） */
+    if (*args == '@')
+    {
+        char *end = NULL;
+        unsigned long off = strtoul(args + 1, &end, 10);
+        unsigned long w = 2;
+        if (*end == ':' && end[1] != '\0')
+        {
+            char *end2 = NULL;
+            w = strtoul(end + 1, &end2, 10);
+            if (end2 == end + 1) return;       /* 宽度解析失败：整条丢弃 */
+            end = end2;
+        }
+        if (end == args + 1) return;
+        InterlockedExchange(&g_blk_off, (LONG)off);
+        if (w < 1) w = 1;                       /* 合法域钳制在解析点（唯一生产方） */
+        if (w > 2) w = 2;
+        InterlockedExchange(&g_blk_w, (LONG)w);
+        while (*end == ' ') end++;
+        args = end;
+    }
     USHORT tmp[MAX_BLOCK];
     int n = 0;
     while (*args && n < MAX_BLOCK) {
@@ -216,7 +288,10 @@ static DWORD WINAPI pipe_thread(LPVOID unused)
                               PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
                               PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                               1,                 /* 单实例 */
-                              1024, 1024, 0, psa);
+                              /* 出/入缓冲 16K：学习模式全量流（鼠标 ~125Hz 报告）下
+                                 1K 缓冲几条就满，主程序读慢时 WriteFile 会阻塞在
+                                 HID 投递路径本身 —— 缓冲大一点是保险 */
+                              16384, 16384, 0, psa);
     if (psd) LocalFree(psd);
     if (g_pipe == INVALID_HANDLE_VALUE) {
         char buf[128];
@@ -249,6 +324,9 @@ static DWORD WINAPI pipe_thread(LPVOID unused)
     for (;;)                                   /* ===== 会话循环 ===== */
     {
     g_pipe_ok = 1;
+    /* 协议握手：主程序据此识别 DLL 版本。WUDFHost 常驻 —— 主程序部署新版后
+       连到的可能还是旧版驻留 DLL（管道名不变），靠这行发现并升级重注入。 */
+    send_line("tap 3\n");
     send_hb();
 
     char rbuf[512];
@@ -268,6 +346,8 @@ static DWORD WINAPI pipe_thread(LPVOID unused)
                     if (nl) *nl = '\0';
                     if (!strncmp(line, "block ", 6))
                         apply_block(line + 6);
+                    else if (!strncmp(line, "filter ", 7))
+                        apply_filter(line + 7);
                     else if (!strcmp(line, "ping"))
                         send_hb();
                     else if (!strcmp(line, "unload")) {

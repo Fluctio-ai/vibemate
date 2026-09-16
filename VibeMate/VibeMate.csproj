@@ -26,8 +26,11 @@
          用户删改 exe 旁的物理文件不影响运行 -->
     <EmbeddedResource Include="web\**" />
     <EmbeddedResource Include="..\tap\tap.dll" LogicalName="VibeMate.tap.dll" />
-    <!-- 托盘动效宫格（3 列=待机/语音/按键 × 3 帧）。改图：换 512 的
-         tray.icons.png（3x3 透明底）后重新 publish 即可 -->
+    <!-- 已知遥控器指纹库（预填键名/指纹；云端源+本地学习兜底，见 DeviceDb.cs）。
+         云端源在 mumutoy/vibe-mote 仓库根的 devices.json，这里是内嵌兜底副本 -->
+    <EmbeddedResource Include="..\devices.json" LogicalName="VibeMate.devices.json" />
+    <!-- 托盘动效宫格（3 列=待机/语音/按键 × 3 帧）。改图：跑 make-tray-icons.ps1
+         （品红底大图 → 抠像 + 逐图标居中归一化）生成 tray.icons.png 后重新 publish -->
     <EmbeddedResource Include="tray.icons.png" LogicalName="VibeMate.tray.icons.png" />
     <!-- 随行文件（一键安装脚本）—— ★清单唯一登记处：
          · 资源名约定 VibeMate.companion.<释放名>（Program.ExtractCompanions 按
