@@ -455,7 +455,7 @@ public sealed class HttpServer
                             item["vid"] = vp.Vid;
                             item["pid"] = vp.Pid;
                             // 已知设备：vid+pid+蓝牙名三重认定（普通版与 Pro 共用
-                            // VID/PID，名称不中不算）→ 预填型号 + 指纹 + 键名
+                            // VID/PID，名称不中不算）→ 预填型号 + 语音能力
                             // （免学习的便利层；未命中走学习）
                             if (DeviceDb.Lookup(vp.Vid, vp.Pid, name) is { } known)
                             {

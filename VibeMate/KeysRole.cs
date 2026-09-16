@@ -175,7 +175,7 @@ public sealed class KeysRole : IDisposable
             try
             {
                 var bye = Encoding.ASCII.GetBytes("unload\n");
-                await pipe.WriteAsync(bye, ct);
+                await WritePipeAsync(pipe, bye);
                 await Task.Delay(1500, ct);       // 等 DLL 摘 hook + 自卸（文件锁释放）
             }
             catch { /* DLL 已不在 = 无需升级 */ }
@@ -293,31 +293,25 @@ public sealed class KeysRole : IDisposable
                 _mapper.NoteStats(total);
                 // 学习排障观测点：total=流经 hook 的报告数（20s 一拍）。学习时
                 // total 不涨 = DLL 没捕获到这台设备的读路径；涨但无 report = 过滤/变化判定问题
-                bool learning;
-                lock (_learnLock) learning = _learn is not null;
-                if (learning)
+                if (IsLearning)
                     _ = _log($"按键：学习心跳 total={total} sent={p[1]} blocked={p[2]}");
             }
         }
     }
 
     /// <summary>当前 filter 命令字节；学习进行中则 filter 0 0（DLL 全量上报，绝不清位）。</summary>
-    private byte[] FilterBytes()
-    {
-        bool learning;
-        lock (_learnLock) learning = _learn is not null;
-        var p = Profile;
-        var cmd = learning ? "filter 0 0" : $"filter {p.Len} {p.Id:x2}";
-        return Encoding.ASCII.GetBytes(cmd + "\n");
-    }
+    private byte[] FilterBytes() =>
+        Encoding.ASCII.GetBytes((IsLearning ? "filter 0 0" : $"filter {Profile.Len} {Profile.Id:x2}") + "\n");
 
-    /// <summary>带超时的管道写（500ms）。★绝不用无限期同步 Write：DLL/WUDFHost
-    /// 烂掉时（未知设备全量上报期间的诡异状态）对端不读、缓冲写满，Write 会
-    /// 永久挂起 —— 调用方在 HTTP 单线程 Loop 上就是全站按钮卡死，在 Session
-    /// 里就是断线重连自愈失效。超时即抛，让上层断开重来。</summary>
+    /// <summary>带超时的管道写（全文件管道写的唯一入口 —— unload/退出路径同受保护，
+    /// 烂 DLL 对端不读时没有豁免）。★绝不用无限期同步 Write：对端不读、缓冲写满，
+    /// Write 会永久挂起 —— 调用方在 HTTP 单线程 Loop 上就是全站按钮卡死，在
+    /// Session 里就是断线重连自愈失效。超时即抛，让上层断开重来。</summary>
+    private const int PipeWriteTimeoutMs = 500;
+
     private static async Task WritePipeAsync(NamedPipeClientStream pipe, byte[] bytes)
     {
-        using var cts = new CancellationTokenSource(500);
+        using var cts = new CancellationTokenSource(PipeWriteTimeoutMs);
         await pipe.WriteAsync(bytes, 0, bytes.Length, cts.Token);
     }
 
@@ -397,22 +391,19 @@ public sealed class KeysRole : IDisposable
         Directory.CreateDirectory(dir);
         var dll = Path.Combine(dir, "tap.dll");
         // tap.dll 嵌在 exe 资源里（防用户删改物理文件）—— 从资源释放
-        if (!Program.ExtractResource("VibeMate.tap.dll", dll))
+        // 写失败也可能是 tap.dll 已被 WUDFHost 加载锁定（注入其实成功了）→ 权威判据 = 模块枚举
+        if (!Program.ExtractResource("VibeMate.tap.dll", dll) && !IsModuleLoaded(pid, "tap.dll"))
         {
-            // 写失败也可能是 tap.dll 已被 WUDFHost 加载锁定（注入其实成功了）→ 权威判据 = 模块枚举
-            if (!IsModuleLoaded(pid, "tap.dll"))
+            // 目标宿主没有 DLL 且新副本写不进 —— 大概率「别的」旧 WUDFHost 锁着
+            // 文件（遥控器重连后换了宿主）。磁盘 DLL 还在：LoadLibrary 共享读
+            // 不受锁影响，协议握手（tap 3）兜得住版本差异 —— 直接注入现有文件。
+            if (!File.Exists(dll))
             {
-                // 目标宿主没有 DLL 且新副本写不进 —— 大概率「别的」旧 WUDFHost 锁着
-                // 文件（遥控器重连后换了宿主）。磁盘 DLL 还在：LoadLibrary 共享读
-                // 不受锁影响，协议握手（tap 3）兜得住版本差异 —— 直接注入现有文件。
-                if (!File.Exists(dll))
-                {
-                    Note = "缺少内嵌 tap.dll";
-                    await _log("按键：tap.dll 资源释放失败");
-                    return false;
-                }
-                await _log("按键：tap.dll 被旧宿主锁定无法更新 —— 注入磁盘现有副本");
+                Note = "缺少内嵌 tap.dll";
+                await _log("按键：tap.dll 资源释放失败");
+                return false;
             }
+            await _log("按键：tap.dll 被旧宿主锁定无法更新 —— 注入磁盘现有副本");
         }
         Process.Start(new ProcessStartInfo("icacls", $"\"{dll}\" /grant Everyone:RX")
         { CreateNoWindow = true, UseShellExecute = false })?.WaitForExit(3000);
@@ -618,7 +609,7 @@ public sealed class KeysRole : IDisposable
             var pipe = new NamedPipeClientStream(".", $"vibemote-keys-{pid}", PipeDirection.InOut);
             await pipe.ConnectAsync(1000);
             var cmd = Encoding.ASCII.GetBytes("unload\n");
-            await pipe.WriteAsync(cmd);
+            await WritePipeAsync(pipe, cmd);
             await Task.Delay(1500);                    // 给 DLL 走完注销流程
             pipe.Dispose();
             await _log("按键：unload 已发送，DLL 已注销");
@@ -664,6 +655,10 @@ public sealed class KeysRole : IDisposable
     private readonly object _learnLock = new();
     private LearnSession? _learn;
 
+    /// <summary>学习会话是否进行中（锁内快照 —— 跨线程判 _learn 的统一入口，
+    /// FilterBytes/心跳观测共用，不再各处手抄两行惯用法）。</summary>
+    private bool IsLearning { get { lock (_learnLock) return _learn is not null; } }
+
     internal sealed class LearnSession
     {
         internal readonly DateTime Started = DateTime.Now;
@@ -688,7 +683,7 @@ public sealed class KeysRole : IDisposable
             }
             if (_press is not { } press) return false;           // 没在按住：空闲帧忽略
             _press = null;
-            if (State is "confirmed" or "mismatch") return false; // 已锁定：等前端处理
+            if (State == "confirmed") return false;              // 已锁定：等前端处理
             var (p, u) = Diff(press, b);
             if (p is null) return false;                         // 不像遥控器报告（多键/异长），丢弃
             if (Profile is null) Profile = p;
@@ -806,7 +801,7 @@ public sealed class KeysRole : IDisposable
             return new JsonObject
             {
                 ["learning"] = true,
-                ["state"] = ls.State,               // waiting|counting|confirmed|mismatch
+                ["state"] = ls.State,               // waiting|counting|confirmed
                 ["usage"] = $"0x{ls.Usage:X4}",     // counting/confirmed=目标键
                 ["got"] = $"0x{ls.GotOther:X4}",    // 非 0=刚发生过重置（前端提示用）
                 ["count"] = ls.Count,

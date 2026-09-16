@@ -544,9 +544,11 @@ async function pollDevLearn() {
   if (L.state === 'waiting') {
     setCands('');   // 状态回 waiting 必须清面板：残留的 confirmed 按钮点了是空转
                     // （后端已不在 confirmed，next 无操作）——「点了没反应」的元凶
-    $('devlearn-note').textContent = (L.got && L.got !== '0x0000')
+    const t = (L.got !== '0x0000')
       ? `⚠ 按出了不同的键（收到 ${L.got}）—— 已重置，请只按你想学的那个键`
       : '监听中 —— 按一下遥控器上你想学的键';
+    const note = $('devlearn-note');            // 同 setCands 纪律：内容不变不动 DOM
+    if (note.textContent !== t) note.textContent = t;
   } else if (L.state === 'counting') {
     setCands(`<div style="margin:4px 0"><span class="pill">${L.usage}</span>` +
       ` 已记录 <b>${L.count} / 3</b> —— 继续按<b>同一个键</b>` +
@@ -786,7 +788,9 @@ $('learn-save').onclick = async () => {
     postJson('/api/learn', { action: 'save', labels: { [uKey]: keyName } })
       .then(rs => { if (rs.ok) $('devlearn-note').textContent = `「${keyName}」已存档 —— 继续按下一个键`; })
       .catch(() => {});
-    postJson('/api/learn', { action: 'next' }).then(() => startDevPoll()).catch(() => {});
+    // 保存回 waiting：恢复轮询（失败也恢复 —— 不恢复 UI 会冻在已清空的面板上）
+    try { await postJson('/api/learn', { action: 'next' }); } catch {}
+    startDevPoll();
   }
   $('learn-form').style.display = 'none';
   $('learn-hint').textContent = '继续按下一个键…';

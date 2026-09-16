@@ -55,7 +55,7 @@ internal static class DeviceDb
         {
             if (File.Exists(CachePath)
                 && JsonNode.Parse(File.ReadAllText(CachePath)) is JsonObject cached
-                && VersionOf(cached) >= _builtinVersion)
+                && Acceptable(cached))
             {
                 lock (Lock) _table = cached;
                 return;
@@ -71,6 +71,11 @@ internal static class DeviceDb
         catch { return 0; }
     }
 
+    /// <summary>「表可接受」谓词（Load 缓存与 RefreshAsync 拉表共用，宽严一致）：
+    /// 有 devices 数组且版本 ≥ 内置。</summary>
+    private static bool Acceptable(JsonObject? o) =>
+        o?["devices"] is JsonArray && VersionOf(o) >= _builtinVersion;
+
     /// <summary>启动后台刷新：拉到合法表才落缓存（版本管理交给 URL @main，
     /// 缓存整体替换）。绝不阻塞启动 —— 表是便利层，不是依赖。</summary>
     public static void RefreshAsync()
@@ -83,8 +88,7 @@ internal static class DeviceDb
                 {
                     using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
                     var text = await http.GetStringAsync(url);
-                    if (JsonNode.Parse(text) is JsonObject o && o["devices"] is JsonArray
-                        && VersionOf(o) >= _builtinVersion)
+                    if (JsonNode.Parse(text) is JsonObject o && Acceptable(o))
                     {
                         Directory.CreateDirectory(Path.GetDirectoryName(CachePath)!);
                         await File.WriteAllTextAsync(CachePath, text);
@@ -100,12 +104,13 @@ internal static class DeviceDb
 
     /// <summary>按 VID/PID + 蓝牙名查表。★三者缺一不可：小米普通版与 RC003 共用
     /// 2717:32b8，仅 VID/PID 无法区分型号 —— 条目 names（忽略大小写、包含即中）
-    /// 须命中 name 才认定；names 缺失/名称空 → 跳过该条目（继续找同 VID/PID 的
-    /// 其他条目）。命中返回 {vid,pid,brand,model,voice,report,keys} 的拷贝；
+    /// 须命中 name 才认定；names 缺失 → 跳过该条目（继续找同 VID/PID 的其他
+    /// 条目）。命中返回 {vid,pid,brand,model,voice,report,keys} 的拷贝；
     /// 未命中 null（调用方引导学习模式）。</summary>
     public static JsonObject? Lookup(string? vid, string? pid, string? name)
     {
-        if (string.IsNullOrWhiteSpace(vid) || string.IsNullOrWhiteSpace(pid)) return null;
+        if (string.IsNullOrWhiteSpace(vid) || string.IsNullOrWhiteSpace(pid)
+            || string.IsNullOrWhiteSpace(name)) return null;   // name 空则任何条目都不可能命中
         JsonObject? arr;
         lock (Lock) arr = _table;
         var devices = arr?["devices"] as JsonArray;
@@ -116,7 +121,7 @@ internal static class DeviceDb
                 || !string.Equals(d["pid"]?.GetValue<string>(), pid, StringComparison.OrdinalIgnoreCase))
                 continue;
             var patterns = d["names"] as JsonArray;
-            if (patterns is null || patterns.Count == 0 || string.IsNullOrWhiteSpace(name)
+            if (patterns is null || patterns.Count == 0
                 || !patterns.Any(p =>
                     name.Contains(p?.GetValue<string>() ?? "", StringComparison.OrdinalIgnoreCase)))
                 continue;

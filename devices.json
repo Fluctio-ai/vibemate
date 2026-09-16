@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "_comment": "VibeMate 已知遥控器指纹库。keys 是预填的键名标签（usage→名字），未收录设备走界面学习模式逐键学习；语音能力=ATVV 运行时探测，不依赖本表。新设备欢迎 PR 补充（学习页可导出指纹）。RC003 报文数据来源：axonkey docs/WINDOWS_RC003_EXTRA_KEYS.md 2026-09-09 真机实测。★型号认定 vid+pid+names 三者缺一不可（小米普通版与 RC003 共用 2717:32b8，靠蓝牙名区分）：names 是蓝牙设备名匹配片段，忽略大小写、包含即命中；本地读不到设备名或 names 不中 → 不认定，走学习模式。",
+  "_comment": "VibeMate 已知遥控器指纹库。keys 是预填的键名标签（usage→名字），未收录设备走界面学习模式逐键学习；语音能力=ATVV 运行时探测，不依赖本表。新设备欢迎 PR 补充（学习页可导出指纹）。RC003 报文数据来源：axonkey docs/WINDOWS_RC003_EXTRA_KEYS.md 2026-09-09 真机实测。★型号认定 vid+pid+names 三者缺一不可（小米普通版与 RC003 共用 2717:32b8，靠蓝牙名区分），names 匹配语义见 DeviceDb.Lookup。",
   "devices": [
     {
       "vid": "18d1",
