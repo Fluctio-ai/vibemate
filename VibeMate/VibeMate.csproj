@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- net10.0-windows + WinForms：托盘 NotifyIcon 需要。
+       普通单文件发布（不用 NativeAOT——它依赖 VS Build Tools 链接器）。 -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- windows10.0.19041.0：WinRT 投影（Windows.Devices.Bluetooth）最低平台版本 -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>VibeMate</AssemblyName>
+    <Version>2.1.0</Version>
+    <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
+  </PropertyGroup>
+  <!-- 发布管线收敛一处：build.yml / README 手册命令只传 -c Release 即可，
+       改 flag 不再需要同步多个调用点。RID 与 self-contained 留在命令行（那是
+       「发布意图」而非管线细节）。DebugType=none 让 pdb 在源头不产出。 -->
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <DebugType>none</DebugType>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- 界面与 tap.dll、首次初始化脚本全部嵌入 exe（内存加载/资源释放）：
+         用户删改 exe 旁的物理文件不影响运行 -->
+    <EmbeddedResource Include="web\**" />
+    <EmbeddedResource Include="..\tap\tap.dll" LogicalName="VibeMate.tap.dll" />
+    <!-- 托盘动效宫格（3 列=待机/语音/按键 × 3 帧）。改图：换 512 的
+         tray.icons.png（3x3 透明底）后重新 publish 即可 -->
+    <EmbeddedResource Include="tray.icons.png" LogicalName="VibeMate.tray.icons.png" />
+    <!-- 随行文件（一键安装脚本）—— ★清单唯一登记处：
+         · 资源名约定 VibeMate.companion.<释放名>（Program.ExtractCompanions 按
+           前缀枚举，加文件不用改代码）
+         · 同批 None+CopyToOutputDirectory：dotnet publish 输出即完整发布包，
+           build.yml 不再需要额外 Copy-Item -->
+    <EmbeddedResource Include="..\install.ps1"  LogicalName="VibeMate.companion.install.ps1" />
+    <EmbeddedResource Include="..\一键安装.bat" LogicalName="VibeMate.companion.一键安装.bat" />
+    <None Include="..\install.ps1"  CopyToOutputDirectory="PreserveNewest" Link="install.ps1" />
+    <None Include="..\一键安装.bat" CopyToOutputDirectory="PreserveNewest" Link="一键安装.bat" />
+    <!-- VB-CABLE 驱动三件套 + 官方 Setup（兜底）：没装虚拟声卡时解压出来静默安装
+         （见 CableSetup.cs；不嵌 ControlPanel —— 非功能件，省体积） -->
+    <EmbeddedResource Include="..\third-party\vbcable\vbMmeCable64_win10.inf"    LogicalName="VibeMate.vbcable.vbMmeCable64_win10.inf" />
+    <EmbeddedResource Include="..\third-party\vbcable\vbaudio_cable64_win10.cat" LogicalName="VibeMate.vbcable.vbaudio_cable64_win10.cat" />
+    <EmbeddedResource Include="..\third-party\vbcable\vbaudio_cable64_win10.sys" LogicalName="VibeMate.vbcable.vbaudio_cable64_win10.sys" />
+    <EmbeddedResource Include="..\third-party\vbcable\VBCABLE_Setup_x64.exe"     LogicalName="VibeMate.vbcable.VBCABLE_Setup_x64.exe" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+</Project>

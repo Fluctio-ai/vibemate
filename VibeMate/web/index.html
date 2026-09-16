@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>VibeMate</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23171d26'/%3E%3Cpath d='M9.5 10l6.5 11.5L22.5 10' fill='none' stroke='%234f8cff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  :root { --bg:#10141a; --panel:#171d26; --fg:#dfe6ee; --mut:#8b98a8; --fg-soft:#b9c4d2; --acc:#4f8cff;
+          --acc-solid:#3670d9; --line:#232b36; --ok:#3ecf8e; --warn:#e6a23c; color-scheme:dark; }
+  * { box-sizing:border-box; }
+  /* —— 浏览器原生表面一并接管：选区/焦点环/滚动条，别让亮色默认值漏进暗色界面 —— */
+  ::selection { background:rgba(79,140,255,.35); }
+  :focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-thumb { background:#2a3442; border-radius:5px; border:2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background:#354254; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background:transparent; }
+  * { scrollbar-width:thin; scrollbar-color:#2a3442 transparent; }
+  html,body { height:100%; }
+  body { margin:0; font:14px/1.6 system-ui,"Segoe UI",sans-serif; background:var(--bg); color:var(--fg);
+         font-variant-numeric:tabular-nums; }
+  .app { display:flex; height:100vh; }
+  nav { width:168px; flex:none; border-right:1px solid var(--line); padding:16px 0; }
+  nav .brand { padding:0 20px 14px; font-size:15px; font-weight:600; }
+  nav .brand small { display:block; color:var(--mut); font-weight:400; font-size:11px; }
+  nav a { display:block; padding:9px 20px; color:var(--mut); text-decoration:none; font-size:13px;
+          border-left:2px solid transparent; cursor:pointer; transition:color .15s, background-color .15s; }
+  nav a:hover { color:var(--fg); background:rgba(255,255,255,.03); }
+  nav a:focus-visible { outline-offset:-2px; }
+  nav a.on { color:var(--fg); border-left-color:var(--acc); background:rgba(79,140,255,.07); }
+  main { flex:1; overflow:auto; padding:28px 32px; }
+  .page { display:none; max-width:720px; }
+  .page.on { display:block; animation:pagein .18s cubic-bezier(.2,.7,.3,1); }
+  @keyframes pagein { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
+  h2 { font-size:17px; margin:0 0 16px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+          padding:18px; margin-bottom:16px; }
+  .card h3 { font-size:13px; color:var(--mut); margin:0 0 10px; font-weight:600; }
+  .row { display:flex; justify-content:space-between; align-items:center; padding:6px 0; font-size:13px; }
+  .row .k { color:var(--mut); }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+  .dot.ok { background:var(--ok); } .dot.off { background:#566; } .dot.warn { background:var(--warn); }
+  .placeholder { color:var(--mut); font-size:13px; padding:22px 0; text-align:center; }
+  .tag { font-size:11px; color:var(--mut); border:1px solid var(--line); border-radius:6px;
+         padding:1px 8px; margin-left:8px; }
+  label { display:block; font-size:12px; color:var(--mut); margin:10px 0 4px; }
+  input, select { width:100%; max-width:340px; padding:8px 10px; border-radius:8px;
+    border:1px solid var(--line); background:var(--bg); color:var(--fg); font:inherit;
+    transition:border-color .15s, box-shadow .15s; }
+  input:hover, select:hover { border-color:#2f3a49; }
+  input:focus, select:focus { outline:none; border-color:var(--acc); box-shadow:0 0 0 3px rgba(79,140,255,.18); }
+  input[type=checkbox] { accent-color:var(--acc); }
+  ::placeholder { color:#77859a; opacity:1; }
+  /* 实心按钮用 --acc-solid：白字压 #4f8cff 只有 3.2:1，压 #3670d9 有 4.69:1。
+     hover 不能提亮底色（白字会跌破 AA），用光环表达；active 才加深。 */
+  button { padding:8px 18px; border-radius:8px; border:none; background:var(--acc-solid);
+    color:#fff; font:inherit; cursor:pointer; white-space:nowrap;
+    transition:background-color .15s, box-shadow .15s, border-color .15s, color .15s; }
+  button:hover:not(:disabled) { box-shadow:0 0 0 3px rgba(79,140,255,.28); }
+  button:active:not(:disabled) { background:#2c62c6; box-shadow:none; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg-soft); }
+  button.ghost:hover:not(:disabled) { color:var(--fg); border-color:#3a4757; background:rgba(255,255,255,.03); }
+  button:disabled { opacity:.5; }
+  .msg { font-size:12px; color:var(--mut); margin-left:10px; }
+  .msg.warn { color:var(--warn); }
+  pre.log { background:#0c1015; border:1px solid var(--line); border-radius:8px; padding:12px;
+    font:12px/1.5 Consolas,monospace; overflow:auto; max-height:60vh; color:#a8b6c6;
+    white-space:pre-wrap; word-break:break-all; }
+  .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
+  .toolbar label.chk { display:flex; gap:6px; align-items:center; margin:0;
+    font-size:12px; white-space:nowrap; flex:none; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:var(--mut); font-weight:600; font-size:12px; padding:6px 8px;
+       border-bottom:1px solid var(--line); }
+  td { padding:6px 8px; border-bottom:1px solid var(--line); }
+  tbody tr { transition:background-color .12s; }
+  tbody tr:hover { background:rgba(255,255,255,.025); }
+  tbody tr:last-child td { border-bottom:none; }
+  .pill { font:11px/1 Consolas,monospace; background:var(--bg); border:1px solid var(--line);
+          border-radius:6px; padding:3px 8px; color:var(--mut); }
+  .flash { animation:flash 0.8s; }
+  @keyframes flash { 0%{background:rgba(79,140,255,.25)} 100%{background:transparent} }
+  .learnbox { border:2px dashed var(--acc); border-radius:12px; padding:18px; margin-top:12px; display:none; }
+  .learnbox.on { display:block; }
+  .listen-hint { font-size:13px; color:var(--warn); }
+
+  /* —— 窄窗口：导航转顶部横条，正文不再限宽（托盘打开的浏览器窗口可宽可窄）—— */
+  @media (max-width:760px) {
+    .app { flex-direction:column; height:auto; min-height:100vh; }
+    nav { width:auto; border-right:none; border-bottom:1px solid var(--line);
+          display:flex; align-items:center; gap:2px; padding:0 10px; overflow-x:auto; }
+    nav .brand { padding:0 10px 0 0; white-space:nowrap; }
+    nav a { padding:12px 12px; border-left:none; border-bottom:2px solid transparent; white-space:nowrap; }
+    nav a.on { border-left:none; border-bottom-color:var(--acc); }
+    main { padding:16px; overflow:visible; }
+    .page { max-width:none; }
+    /* 映射表 4 列在窄屏放不下：给最小宽度，卡片内横向滚动（数据表的标准退路） */
+    #p-keys .card { overflow-x:auto; }
+    #keys-table { min-width:520px; }
+  }
+
+  /* —— 动效敏感用户：入场/闪烁全部关掉，只剩颜色过渡 —— */
+  @media (prefers-reduced-motion: reduce) {
+    * { transition-duration:.01ms !important; }
+    .page.on { animation:none; }
+    .flash { animation:none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+<nav aria-label="主导航">
+  <div class="brand">VibeMate</div>
+  <a data-p="status" class="on" tabindex="0" aria-current="page">状态</a>
+  <a data-p="keys" tabindex="0">按键映射</a>
+  <a data-p="voice" tabindex="0">语音</a>
+  <a data-p="settings" tabindex="0">设置</a>
+  <a data-p="help" tabindex="0">安装帮助</a>
+  <a data-p="logs" tabindex="0">日志</a>
+</nav>
+<main>
+  <!-- 状态 -->
+  <section class="page on" id="p-status">
+    <h2>状态</h2>
+    <div class="card"><h3>运行</h3>
+      <div class="row"><span class="k">版本</span><span id="s-ver">—</span></div>
+      <div class="row"><span class="k">进程</span><span id="s-pid">—</span></div>
+      <div class="row"><span class="k">界面地址</span><span id="s-url">—</span></div>
+      <div class="row"><span class="k">开源地址</span><span>
+        <a href="https://github.com/fluctio-ai/vibemate" target="_blank" rel="noopener"
+           style="color:var(--acc);text-decoration:none">github.com/fluctio-ai/vibemate</a></span></div>
+    </div>
+    <div class="card"><h3>通道</h3>
+      <div class="row"><span class="k">语音（ATVV → 虚拟声卡）</span><span id="s-voice">—</span></div>
+      <div class="row"><span class="k">按键（tap.dll → 映射）</span><span id="s-keys">—</span></div>
+      <div class="row"><span class="k">虚拟声卡（VB-CABLE）</span><span id="s-cable">—</span></div>
+    </div>
+  </section>
+
+  <!-- 按键映射 -->
+  <section class="page" id="p-keys">
+    <h2>按键映射</h2>
+    <div class="card">
+      <h3>当前映射</h3>
+      <div class="toolbar">
+        <button id="learn-start">学习模式：监听遥控器按键</button>
+        <span id="keys-note" class="msg"></span>
+      </div>
+      <table id="keys-table"><thead><tr>
+        <th>按键</th><th>类型</th><th>动作</th><th></th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+    <div class="learnbox card" id="learnbox">
+      <h3 style="color:var(--warn)" id="learn-title">学习模式进行中 —— 现在按遥控器上的任意键</h3>
+      <div class="listen-hint" id="learn-hint">等待按键…</div>
+      <div id="learn-form" style="display:none">
+        <label>检测到按键（usage 是遥控器发来的原始编号，任何遥控器通用）</label>
+        <div><span class="pill" id="learn-usage">—</span></div>
+        <label>给这个键起个名字（显示用；已知 Google 布局的键已预填）</label>
+        <input id="m-keyname" placeholder="例如：确认 / 上 / 快进">
+        <label>映射类型</label>
+        <select id="m-type">
+          <option value="key">单键（按一下发一次）</option>
+          <option value="combo">组合键</option>
+          <option value="hold">按住不放</option>
+          <option value="holdcombo">按住组合键</option>
+          <option value="mouse">鼠标（按一下）</option>
+          <option value="holdmouse">按住鼠标（滚轮=连续滚）</option>
+          <option value="text">文本（输入一段文字）</option>
+        </select>
+        <label>动作（可手选，或点「捕获」后按一下键盘 / 滚一下滚轮 / 点一下鼠标）</label>
+        <div class="toolbar" style="margin:0 0 6px">
+          <button class="ghost" id="cap-btn">捕获输入</button>
+          <span id="cap-msg" class="msg warn"></span>
+        </div>
+        <select id="m-value"></select>
+        <label>修饰键（组合键用，可多选）</label>
+        <select id="m-mods" multiple size="4" style="height:auto"></select>
+        <label>文本内容（text 类型用）</label>
+        <input id="m-text" placeholder="/exit 之类的命令">
+        <label style="display:flex;gap:8px;align-items:center;margin-top:14px">
+          <input type="checkbox" id="m-long-enable" style="width:auto">
+          启用长按动作（按住 ≥0.4s 触发另一套 —— 例：短按=删除一下，长按=连续删除）
+        </label>
+        <div id="m-long-box" style="display:none;border-left:2px solid var(--line);padding-left:14px;margin-top:8px">
+          <label>长按 · 类型</label>
+          <select id="m-long-type">
+            <option value="key">单键（长按期间每 0.2s 连发）</option>
+            <option value="combo">组合键（长按连发）</option>
+            <option value="hold">按住不放</option>
+            <option value="holdcombo">按住组合键</option>
+            <option value="mouse">鼠标（连发）</option>
+            <option value="holdmouse">按住鼠标（滚轮=连续滚）</option>
+            <option value="text">文本</option>
+          </select>
+          <label>长按 · 动作（可点「捕获」抓）</label>
+          <div class="toolbar" style="margin:0 0 6px">
+            <button class="ghost" id="m-long-cap">捕获输入</button>
+            <span id="m-long-cap-msg" class="msg warn"></span>
+          </div>
+          <select id="m-long-value"></select>
+          <label>长按 · 修饰键</label>
+          <select id="m-long-mods" multiple size="4" style="height:auto"></select>
+          <label>长按 · 文本内容</label>
+          <input id="m-long-text" placeholder="长按时输入的文本">
+        </div>
+        <div style="margin-top:14px">
+          <button id="learn-save">保存并继续学下一个</button>
+          <button class="ghost" id="learn-stop">结束学习</button>
+          <span id="msg-keys" class="msg" role="status"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 语音 -->
+  <section class="page" id="p-voice">
+    <h2>语音</h2>
+    <div class="card"><h3>语音键目标（按住遥控器语音键 → 发这个快捷键）</h3>
+      <label>模式</label>
+      <select id="v-mode">
+        <option value="hold">按住（多数输入法：按住说话）</option>
+        <option value="tap">单击（Win+H 开关式）</option>
+      </select>
+      <label>主键（可手选，或点「捕获」后按一下键盘）</label>
+      <div class="toolbar" style="margin:0 0 6px">
+        <button class="ghost" id="v-cap-btn">捕获输入</button>
+        <span id="v-cap-msg" class="msg warn"></span>
+      </div>
+      <select id="v-key"></select>
+      <label>修饰键（可多选；微信语音方案通常配 LWIN + LWIN）</label>
+      <select id="v-mods" multiple size="5" style="height:auto"></select>
+      <div style="margin-top:14px"><button id="v-save">保存</button><span id="msg-voice" class="msg" role="status"></span></div>
+    </div>
+    <div class="card"><h3>音频增强</h3>
+      <label>固定增益 gain（AGC 关闭时生效，默认 4.0）</label>
+      <input id="a-gain" type="number" step="0.5" min="0.5" max="24">
+      <label style="display:flex;gap:8px;align-items:center;margin-top:12px">
+        <input type="checkbox" id="a-agc" style="width:auto">自动增益 AGC（推荐开：按人声音量自动调）
+      </label>
+      <label style="display:flex;gap:8px;align-items:center">
+        <input type="checkbox" id="a-relay" style="width:auto">内置麦克风直通（用键盘触发语音输入法时，麦克风声音也进虚拟声卡）
+      </label>
+      <div style="margin-top:14px"><button id="a-save">保存音频设置</button><span id="msg-audio" class="msg" role="status"></span></div>
+    </div>
+    <div class="card"><h3>虚拟声卡（VB-CABLE，语音功能必需）</h3>
+      <div class="row"><span class="k">状态</span><span id="cable-state">—</span></div>
+      <div style="font-size:12px;color:var(--mut);margin:6px 0 12px;line-height:1.7">
+        试用说明：语音走「遥控器 → VB-CABLE 虚拟声卡 → 输入法」链路，需要虚拟声卡。
+        安装包已内置驱动文件 —— 程序以管理员运行时会自动检测并静默安装；
+        若被安全软件拦截或自动失败，点下面按钮手动安装（弹一次 UAC）；
+        仍不行就手动运行 %ProgramData%\VibeMate\vbcable\VBCABLE_Setup_x64.exe。
+      </div>
+      <button class="ghost" id="cable-install">检测并安装</button>
+      <span id="msg-cable" class="msg" role="status"></span>
+    </div>
+    <div class="card"><h3>链路状态</h3>
+      <div class="row"><span class="k">状态</span><span id="v-state">—</span></div>
+      <div class="row"><span class="k">音频出口</span><span>NAudio → CABLE Input</span></div>
+    </div>
+  </section>
+
+  <!-- 设置 -->
+  <section class="page" id="p-settings">
+    <h2>设置</h2>
+    <div class="card"><h3>基本</h3>
+      <label>界面端口 ui_port</label>
+      <input id="ui_port" type="number" min="1" max="65535">
+      <label>遥控器蓝牙地址（从已配对设备选择；留空 = 语音不启用）</label>
+      <div class="toolbar" style="margin:0">
+        <select id="remote_addr" style="max-width:340px"></select>
+        <button class="ghost" id="bt-refresh">刷新设备列表</button>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:16px">
+        <input type="checkbox" id="autostart" style="width:auto">开机自启（登录时静默启动，含按键注入所需的最高权限）
+      </label>
+      <div style="margin-top:16px"><button id="save">保存</button><span id="msg" class="msg" role="status"></span></div>
+    </div>
+  </section>
+
+  <!-- 安装帮助 -->
+  <section class="page" id="p-help">
+    <h2>安装帮助</h2>
+
+    <div class="card"><h3>这是什么</h3>
+      <div style="font-size:13px;line-height:1.8">
+        把 Google TV / Chromecast 蓝牙遥控器变成 Windows 的「按住说话 + 快捷键」设备：
+        语音键按住说话（发给输入法），其余按键映射成键盘 / 鼠标 / 文本命令。
+      </div>
+    </div>
+
+    <div class="card"><h3>第一次使用（4 步）</h3>
+      <div style="font-size:13px;line-height:1.8">
+        1. 双击程序文件夹里的 <b>「一键安装.bat」</b>（弹一次 UAC 点「是」）——
+        自动建开机自启任务并启动；<br>
+        2. Windows 设置 → 蓝牙和其他设备：添加设备，配对你的遥控器；<br>
+        3. 左键点托盘图标（或本页地址）打开设置页，在「设置」页选择你的遥控器，保存；<br>
+        4. 按住遥控器语音键说话试试（输入法需要把麦克风设为「CABLE Output」）。
+      </div>
+    </div>
+
+    <div class="card"><h3>虚拟声卡（语音功能必需）</h3>
+      <div style="font-size:13px;line-height:1.8">
+        语音走「遥控器 → VB-CABLE 虚拟声卡 → 输入法」链路，需要虚拟声卡 VB-CABLE：<br>
+        · 安装包已内置驱动文件，程序以管理员运行时会<b>自动检测并静默安装</b>；<br>
+        · 若被安全软件拦截或自动失败：到「语音」页点「检测并安装」（弹一次 UAC）；<br>
+        · 仍不行就手动运行 %ProgramData%\VibeMate\vbcable\VBCABLE_Setup_x64.exe。
+      </div>
+      <div class="row"><span class="k">当前状态</span><span id="h-cable">—</span></div>
+    </div>
+
+    <div class="card"><h3>按键映射</h3>
+      <div style="font-size:13px;line-height:1.8">
+        「按键映射」页 → <b>学习模式</b>：按遥控器任意键，给它配一个键盘 / 鼠标 / 文本动作。<br>
+        出厂默认：方向键=方向键，OK=回车，返回=退格（长按连删），主页=ESC，
+        输入=Shift+Tab，电源 / YouTube / Netflix=Ctrl+回车发送 /exit、/clear、commit+push，
+        音量=Ctrl+滚轮，语音键=Win+Ctrl 按住说话。
+      </div>
+    </div>
+
+    <div class="card"><h3>托盘</h3>
+      <div style="font-size:13px;line-height:1.8">
+        左键：打开设置页；右键菜单：<b>设置 / 重启 / 退出</b>。<br>
+        重启 = 自动卸载按键注入、释放蓝牙会话，再拉起新实例重新挂载 ——
+        注入或蓝牙出怪问题时先点它。<br>
+        图标动效：待机=闭眼呼吸；按到有映射的键=快闪一轮；语音输入=声浪循环。
+      </div>
+    </div>
+
+    <div class="card"><h3>排障</h3>
+      <div style="font-size:13px;line-height:1.8">
+        · 一切异常先看「日志」页（对应程序目录 vibe.log；[CABLE] 段是虚拟声卡安装流水）；<br>
+        · 蓝牙连不上：遥控器休眠了，按任意键唤醒再等几秒；<br>
+        · 按键没反应：看状态页「按键」通道是否「已连接」，未连接先点托盘「重启」；<br>
+        · 完整卸载：删除程序目录 + 任务计划程序里的 VibeMate 任务 + %ProgramData%\VibeMate。
+      </div>
+    </div>
+  </section>
+
+  <!-- 日志 -->
+  <section class="page" id="p-logs">
+    <h2>日志</h2>
+    <div class="toolbar">
+      <button id="refresh" class="ghost">刷新</button>
+      <label class="chk"><input type="checkbox" id="auto" checked>自动（2s）</label>
+      <button id="more" class="ghost">更多 +100</button>
+      <span id="log-count" class="msg"></span>
+    </div>
+    <pre class="log" id="log">—</pre>
+  </section>
+</main>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+
+// ---- 选项表（与后端 KeysInput.VK 对齐的常用子集 + 鼠标动作）----
+const NAME2USAGE = { power:'0x019E', input:'0x0189', up:'0x0042', down:'0x0043',
+  left:'0x0044', right:'0x0045', ok:'0x0041', back:'0x0224', home:'0x0223',
+  volup:'0x00E9', voldown:'0x00EA', mute:'0x00E2', youtube:'0x0077', netflix:'0x0078',
+  voice:'0xFFFE' };
+const nameToUsage = n => NAME2USAGE[n] || null;
+const MODS = ['CTRL','SHIFT','ALT','LCTRL','RCTRL','LSHIFT','RSHIFT','LALT','RALT','LWIN','RWIN'];
+const KEYS = ['ENTER','ESC','BACKSPACE','TAB','SPACE','UP','DOWN','LEFT','RIGHT','HOME','END',
+  'PAGEUP','PAGEDOWN','INSERT','DELETE','F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12',
+  'A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
+  'DIGIT0','DIGIT1','DIGIT2','DIGIT3','DIGIT4','DIGIT5','DIGIT6','DIGIT7','DIGIT8','DIGIT9',
+  'MINUS','EQUAL','LBRACKET','RBRACKET','SEMICOLON','QUOTE','BACKQUOTE','BACKSLASH','COMMA','PERIOD','SLASH'];
+const MICE = ['wheel_up','wheel_down','left','right','middle'];
+
+function fill(sel, arr) { sel.innerHTML = arr.map(k => `<option>${k}</option>`).join(''); }
+fill($('v-key'), [...MODS, ...KEYS]); fill($('v-mods'), MODS);
+$('v-key').insertAdjacentHTML('afterbegin', '<option value="">（无 —— 只按住修饰键）</option>');
+fill($('m-mods'), MODS);
+
+// ---- 导航 ----
+document.querySelectorAll('nav a').forEach(a => {
+  // 无 href 的 <a> 不进 Tab 序：tabindex=0 + 回车/空格触发（键盘可达）
+  a.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); a.click(); }
+  });
+  a.onclick = () => {
+    document.querySelectorAll('nav a').forEach(x => {
+      x.classList.toggle('on', x === a);
+      if (x === a) x.setAttribute('aria-current', 'page'); else x.removeAttribute('aria-current');
+    });
+    document.querySelectorAll('.page').forEach(p => p.classList.toggle('on', p.id === 'p-' + a.dataset.p));
+    if (a.dataset.p === 'logs') loadLog();
+    if (a.dataset.p === 'status' || a.dataset.p === 'voice') loadState();
+    if (a.dataset.p === 'keys') renderKeys();
+    if (a.dataset.p === 'settings') loadSettingsExtras();   // 变化很少的数据不跟 2s 轮询跑
+  };
+});
+
+// ---- 状态 ----
+let CFG = null;
+async function loadState() {
+  let s;
+  try { s = await (await fetch('/api/state')).json(); }
+  catch { return; }   // 服务重启/瞬断：静默跳过本轮，下一轮轮询自愈（loadLog/pollEvents 同款）
+  CFG = s.config;
+  $('s-ver').textContent = 'v' + s.version;
+  $('s-pid').textContent = s.pid;
+  $('s-url').textContent = `http://127.0.0.1:${s.port}`;
+  const st = (ok, note) => `<i class="dot ${ok ? 'ok' : 'off'}"></i>${note}`;
+  $('s-voice').innerHTML = st(s.voice?.connected, s.voice?.note || '—');
+  $('s-keys').innerHTML = st(s.keys?.ready, s.keys?.note || '—');
+  const cabOk = !!s.cable?.installed;
+  const cabTxt = cabOk ? '已就绪' : '未检测到（自动安装中，或到「语音」页手动安装）';
+  $('s-cable').innerHTML = st(cabOk, cabTxt);
+  $('cable-state').innerHTML = st(cabOk, cabOk ? '已就绪' : '未安装');
+  $('h-cable').innerHTML = st(cabOk, cabTxt);
+  $('keys-note').textContent = s.keys?.note || '';
+  $('v-state').textContent = (s.voice?.connected ? '● ' : '○ ') + (s.voice?.note || '');
+  if (!$('v-mode').dataset.loaded) {
+    const v = s.config.voice || {};
+    $('v-mode').value = v.mode || 'hold';
+    $('v-key').value = v.key || 'RALT';
+    [...$('v-mods').options].forEach(o => o.selected = (v.mods || []).includes(o.value));
+    $('v-mode').dataset.loaded = 1;
+  }
+  $('ui_port').value = s.config.ui_port ?? 8787;
+  loadAudio();
+}
+
+// ---- 设置页专属数据：自启状态 + 蓝牙设备表（只在进设置页时拉 —— 否则 2s 轮询
+//      每轮都会在服务端拉起 schtasks 子进程/三连扫注册表，还重灌下拉打断选择）----
+function loadSettingsExtras() {
+  fetch('/api/autostart').then(r => r.json())
+    .then(r => $('autostart').checked = r.enabled).catch(() => {});
+  loadBtDevices(CFG?.remote_addr ?? '');
+}
+
+// ---- 按键映射表 ----
+const TYPE_LABEL = { key:'单键', combo:'组合键', hold:'按住', holdcombo:'按住组合',
+                     mouse:'鼠标', holdmouse:'按住鼠标', text:'文本' };
+let _lastKeysJson = '';
+function renderKeys(force) {
+  const keys = (CFG && CFG.keys) || {};
+  const j = JSON.stringify(keys);
+  if (!force && j === _lastKeysJson) return;      // 无变化不重绘（防闪防抢点击）
+  _lastKeysJson = j;
+  const tb = $('keys-table').querySelector('tbody');
+  tb.innerHTML = Object.entries(keys).map(([name, m]) => {
+    const target = m.type === 'text' ? `「${(m.text||'').slice(0,20)}」`
+      : m.type.includes('mouse') ? m.value
+      : [...(m.mods||[]), m.value].join('+');
+    const longT = m.long
+      ? ` 长按→${m.long.type === 'text' ? '「'+(m.long.text||'').slice(0,12)+'」' : [...(m.long.mods||[]), m.long.value].join('+')}`
+      : '';
+    return `<tr><td>${name}</td><td>${TYPE_LABEL[m.type]||m.type}</td>
+      <td><span class="pill">${target}</span>${m.long ? `<span class="pill">${longT}</span>` : ''}</td>
+      <td><button class="ghost" data-edit="${name}">编辑</button>
+          <button class="ghost" data-del="${name}">删除</button></td></tr>`;
+  }).join('') || '<tr><td colspan=4 style="color:var(--mut)">还没有映射 —— 用下面的学习模式加</td></tr>';
+  tb.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
+    const m = CFG?.keys?.[b.dataset.edit];
+    if (!m) return;
+    learning = false;                                 // 编辑模式：不监听新按键
+    clearInterval(pollTimer); pollTimer = null;
+    $('learnbox').classList.add('on');
+    $('learn-title').textContent = `编辑「${b.dataset.edit}」的按键设置`;
+    fillLearnForm(b.dataset.edit, m);                 // 直接带出现有配置
+    $('learnbox').scrollIntoView({ behavior:'smooth', block:'nearest' });  // 表单可能还在视口外
+  });
+  tb.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    const keys2 = { ...(CFG.keys) }; delete keys2[b.dataset.del];
+    const r = await postConfig({ keys: keys2 });
+    $('msg-keys').textContent = r.ok ? `已删除 ${b.dataset.del}` : '失败：' + r.msg;
+    await loadState(); renderKeys(true);
+  });
+}
+// POST 统一走这里（后端两道闸强制 application/json，契约只复述一次）
+async function postJson(url, body) {
+  return await (await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })).json();
+}
+async function postConfig(patch) { return postJson('/api/config', patch); }
+
+// ---- 学习模式 ----
+let learning = false, lastEv = 0, pollTimer = null;
+$('learn-start').onclick = () => { learning = true; $('learnbox').classList.add('on');
+  $('learn-title').textContent = '学习模式进行中 —— 现在按遥控器上的任意键';
+  $('learn-form').style.display = 'none'; $('learn-hint').textContent = '等待按键…（先允许注入：如弹 UAC 请点“是”）';
+  if (!pollTimer) pollTimer = setInterval(pollEvents, 300);
+  $('learnbox').scrollIntoView({ behavior:'smooth', block:'nearest' }); };  // 表单在映射表下方，滚过去让用户看见
+$('learn-stop').onclick = () => { learning = false; $('learnbox').classList.remove('on');
+  clearInterval(pollTimer); pollTimer = null; };
+
+async function pollEvents() {
+  if (!learning) return;
+  try {
+    const r = await (await fetch(`/api/keyevents?since=${lastEv}`)).json();
+    lastEv = r.last;
+    const press = (r.events || []).find(e => e.down);
+    if (press && $('learn-form').style.display === 'none') {
+      fillLearnForm(press.name, CFG?.keys?.[press.name]);
+    }
+  } catch {}
+}
+// 表单预填：existing 有值=覆盖编辑态；无值=新键干净态
+function fillLearnForm(name, existing) {
+  {
+    $('learn-usage').textContent = existing?.usage || nameToUsage(name) || '';
+    $('m-keyname').value = name.startsWith('usage_') ? '' : name;
+    if (existing) {
+        // ★ 直接覆盖编辑态：表单预填现有配置，改完保存即覆盖（同 usage 旧条目一并清）
+        $('learn-hint').textContent = `「${name}」当前为 ${existing.type} ${existing.value || existing.text || ''} —— 改好后保存即覆盖`;
+        $('m-type').value = existing.type in TYPE_LABEL ? existing.type : 'key';
+        fillValueOptions();
+        if (existing.value && ![...$('m-value').options].some(o => o.value === existing.value))
+          $('m-value').add(new Option(existing.value, existing.value));
+        $('m-value').value = existing.value || '';
+        [...$('m-mods').options].forEach(o => o.selected = (existing.mods || []).includes(o.value));
+        $('m-text').value = existing.text || '';
+        const lg = existing.long;
+        $('m-long-enable').checked = !!lg;
+        $('m-long-box').style.display = lg ? 'block' : 'none';
+        if (lg) {
+          $('m-long-type').value = lg.type in TYPE_LABEL ? lg.type : 'key';
+          $('m-long-type').onchange();
+          if (lg.value && ![...$('m-long-value').options].some(o => o.value === lg.value))
+            $('m-long-value').add(new Option(lg.value, lg.value));
+          $('m-long-value').value = lg.value || '';
+          [...$('m-long-mods').options].forEach(o => o.selected = (lg.mods || []).includes(o.value));
+          $('m-long-text').value = lg.text || '';
+        }
+      } else {
+        $('learn-hint').textContent = '新按键！给它起名并配置动作：';
+        $('m-type').value = 'key'; fillValueOptions(); $('m-value').selectedIndex = 0;
+        [...$('m-mods').options].forEach(o => o.selected = false);
+        $('m-text').value = '';
+        $('m-long-enable').checked = false; $('m-long-box').style.display = 'none';
+      }
+    $('learn-form').style.display = 'block';
+  }
+}
+function fillValueOptions() {
+  const t = $('m-type').value;
+  fill($('m-value'), t.includes('mouse') ? MICE : KEYS);
+}
+$('m-type').onchange = fillValueOptions;
+fill($('m-long-mods'), MODS);
+fill($('m-long-value'), KEYS);
+$('m-long-type').onchange = () => {
+  const t = $('m-long-type').value;
+  fill($('m-long-value'), t.includes('mouse') ? MICE : KEYS);
+};
+$('m-long-enable').onchange = () => $('m-long-box').style.display = $('m-long-enable').checked ? 'block' : 'none';
+bindCapture($('m-long-cap'), $('m-long-cap-msg'),
+  (key, mods) => {
+    if (mods.length) $('m-long-type').value = 'combo'; else if ($('m-long-type').value === 'combo') $('m-long-type').value = 'key';
+    $('m-long-type').onchange();
+    if (![...$('m-long-value').options].some(o => o.value === key))
+      $('m-long-value').add(new Option(key, key));
+    $('m-long-value').value = key;
+    [...$('m-long-mods').options].forEach(o => o.selected = mods.includes(o.value));
+  },
+  (action) => {
+    $('m-long-type').value = action.startsWith('wheel') ? 'holdmouse' : 'mouse';
+    $('m-long-type').onchange();
+    $('m-long-value').value = action;
+  });
+
+// ---- 动作捕获（前端事件版，对齐 v1 的「按键捕获」：键盘/滚轮/鼠标）----
+const CODE2KEY = { ArrowUp:'UP', ArrowDown:'DOWN', ArrowLeft:'LEFT', ArrowRight:'RIGHT',
+  Enter:'ENTER', Escape:'ESC', Backspace:'BACKSPACE', Tab:'TAB', Space:'SPACE',
+  Home:'HOME', End:'END', PageUp:'PAGEUP', PageDown:'PAGEDOWN', Insert:'INSERT', Delete:'DELETE',
+  BracketLeft:'LBRACKET', BracketRight:'RBRACKET', Semicolon:'SEMICOLON', Quote:'QUOTE',
+  Backquote:'BACKQUOTE', Backslash:'BACKSLASH', Comma:'COMMA', Period:'PERIOD', Slash:'SLASH',
+  Minus:'MINUS', Equal:'EQUAL', CapsLock:'CAPSLOCK', PrintScreen:'PRINTSCREEN',
+  NumLock:'NUMLOCK', ScrollLock:'SCROLLLOCK', Pause:'PAUSE' };
+const CODE2MOD = { ShiftLeft:'LSHIFT', ShiftRight:'RSHIFT', ControlLeft:'LCTRL',
+  ControlRight:'RCTRL', AltLeft:'LALT', AltRight:'RALT', MetaLeft:'LWIN', MetaRight:'RWIN' };
+function codeToKey(code) {
+  if (CODE2KEY[code]) return CODE2KEY[code];
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return 'DIGIT' + code.slice(5);
+  if (code.startsWith('Numpad')) return null;              // 小键盘暂不收
+  if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) return code;
+  return null;
+}
+function modsOf(e) {
+  const m = [];
+  if (e.ctrlKey)  m.push(e.location === 2 && e.code.startsWith('Control') ? 'RCTRL' : 'CTRL');
+  if (e.shiftKey) m.push(e.code === 'ShiftRight' ? 'RSHIFT' : 'SHIFT');
+  if (e.altKey)   m.push(e.code === 'AltRight' ? 'RALT' : 'ALT');
+  if (e.metaKey)  m.push(e.code === 'MetaRight' ? 'RWIN' : 'LWIN');
+  return [...new Set(m)];
+}
+
+/** 绑定捕获按钮：armed 状态下，键盘/滚轮/鼠标的第一个输入填入表单（v1 语义）。
+ *  pureMods：允许「纯修饰键组合」——按住 Ctrl+Win 后全部松开即捕获
+ *  （key=最后按住的修饰键，mods=其余；微信输入法的 Ctrl+Win 方案需要）。 */
+function bindCapture(btn, msgEl, onKey, onMouse, pureMods = false) {
+  let armed = false;
+  const heldMods = [];
+  const disarm = (text) => { armed = false; btn.classList.remove('flash');
+    if (msgEl) msgEl.textContent = text || ''; };
+  btn.onclick = () => { armed = true; btn.classList.add('flash');
+    if (msgEl) msgEl.textContent = '捕获中…按一下键盘 / 滚一下滚轮 / 点一下鼠标（再点按钮取消）'; };
+
+  window.addEventListener('keydown', e => {
+    if (!armed) return;
+    e.preventDefault(); e.stopPropagation();
+    if (CODE2MOD[e.code]) {
+      const m = CODE2MOD[e.code];
+      if (!heldMods.includes(m)) heldMods.push(m);
+      if (msgEl) msgEl.textContent = pureMods
+        ? `修饰键组合：${heldMods.join('+')} —— 松开全部即捕获（或再按主键组成组合键）`
+        : '修饰键已按住，再按主键…';
+      return;
+    }
+    const key = codeToKey(e.code);
+    if (!key) { if (msgEl) msgEl.textContent = `暂不支持的键（${e.code}）`; return; }
+    disarm(`已捕获：${[...modsOf(e), key].join('+')}`);
+    heldMods.length = 0;
+    onKey(key, modsOf(e));
+  }, true);
+
+  window.addEventListener('keyup', e => {
+    if (!armed || !pureMods) return;
+    const m = CODE2MOD[e.code];
+    if (!m) return;
+    const i = heldMods.indexOf(m);
+    if (i >= 0) heldMods.splice(i, 1);
+    if (heldMods.length === 0 && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+      // 全部松开：把刚才的组合捕获（key=最后松开前的最后一个 —— 用 modsOf(e) 不可靠，
+      // 用 keyup 时刻的状态重建：key=m，mods=其余按过的（无法精确恢复 → 用当前 e 的状态）
+      const mods = modsOf(e).filter(x => x !== 'LWIN' || m !== 'LWIN');
+      disarm(`已捕获纯修饰组合：${[...mods, m].join('+')}`);
+      onKey(m, mods);
+    }
+  }, true);
+
+  window.addEventListener('wheel', e => {
+    if (!armed) return;
+    e.preventDefault(); e.stopPropagation();
+    disarm('已捕获滚轮（按住连续滚）');
+    onMouse(e.deltaY < 0 ? 'wheel_up' : 'wheel_down');
+  }, { capture: true, passive: false });
+
+  window.addEventListener('mousedown', e => {
+    if (!armed) return;
+    if (e.target.closest && e.target.closest('button, select, input, textarea, a')) return;
+    e.preventDefault(); e.stopPropagation();
+    const v = e.button === 0 ? 'left' : (e.button === 1 ? 'middle' : 'right');
+    disarm('已捕获鼠标键');
+    onMouse(v);
+  }, true);
+}
+
+bindCapture($('cap-btn'), $('cap-msg'),
+  (key, mods) => {                       // 学习表单：键 → 类型+值+修饰键
+    $('m-type').value = mods.length ? 'combo' : 'key';
+    fillValueOptions();
+    if (![...$('m-value').options].some(o => o.value === key))
+      $('m-value').add(new Option(key, key));
+    $('m-value').value = key;
+    [...$('m-mods').options].forEach(o => o.selected = mods.includes(o.value));
+  },
+  (action) => {                          // 鼠标/滚轮
+    $('m-type').value = action.startsWith('wheel') ? 'holdmouse' : 'mouse';
+    fillValueOptions();
+    $('m-value').value = action;
+  });
+
+$('learn-save').onclick = async () => {
+  const usage = $('learn-usage').textContent.replace(/^0x/i, '');
+  const keyName = ($('m-keyname').value.trim() || 'key_' + usage).slice(0, 30);
+  const m = { type: $('m-type').value, value: $('m-value').value,
+              mods: [...$('m-mods').selectedOptions].map(o => o.value),
+              text: $('m-text').value, usage: '0x' + usage.toLowerCase() };
+  if ($('m-long-enable').checked)
+    m.long = { type: $('m-long-type').value, value: $('m-long-value').value,
+               mods: [...$('m-long-mods').selectedOptions].map(o => o.value),
+               text: $('m-long-text').value };
+  const keys2 = { ...(CFG?.keys || {}) };
+  // 同 usage 的旧映射（可能名字不同）先删掉，避免一个键两条映射
+  for (const [k, v] of Object.entries(keys2))
+    if ((v.usage || '').toLowerCase() === ('0x' + usage.toLowerCase())) delete keys2[k];
+  keys2[keyName] = m;
+  const r = await postConfig({ keys: keys2 });
+  $('msg-keys').textContent = r.ok ? `已保存「${keyName}」` : '失败：' + r.msg;
+  $('learn-form').style.display = 'none';
+  $('learn-hint').textContent = '继续按下一个键…';
+  await loadState();
+  renderKeys(true);
+};
+
+// ---- 语音保存 ----
+$('v-save').onclick = async () => {
+  const voice = { mode: $('v-mode').value, key: $('v-key').value,
+                  mods: [...$('v-mods').selectedOptions].map(o => o.value) };
+  const r = await postConfig({ voice });
+  $('msg-voice').textContent = r.ok ? '已保存（即时生效）' : '失败：' + r.msg;
+};
+
+// ---- 开机自启开关（即时生效）----
+$('autostart').onchange = async () => {
+  const want = $('autostart').checked;
+  try {
+    const r = await postJson('/api/autostart', { enabled: want });
+    $('autostart').checked = r.enabled;
+    $('msg').textContent = r.ok ? r.msg : ('失败：' + r.msg);
+  } catch (e) { $('msg').textContent = '错误：' + e; }
+};
+
+// ---- 蓝牙设备列表 ----
+async function loadBtDevices(selected) {
+  const sel = $('remote_addr');
+  try {
+    const r = await (await fetch('/api/btdevices')).json();
+    if (!r.ok) { sel.innerHTML = `<option>${r.msg}</option>`; return; }
+    const cur = selected || sel.value || CFG?.remote_addr || '';
+    sel.innerHTML = '<option value="">（不启用语音）</option>' +
+      (r.devices || []).map(d =>
+        `<option value="${d.addr}" ${d.addr === cur ? 'selected' : ''}>${d.name || '未命名'} — ${d.addr}</option>`).join('');
+    return (r.devices || []).length;
+  } catch { sel.innerHTML = '<option>(枚举失败)</option>'; return -1; }
+}
+$('bt-refresh').onclick = async () => {
+  const btn = $('bt-refresh'), old2 = btn.textContent;
+  btn.disabled = true; btn.textContent = '刷新中…';
+  const n = await loadBtDevices();
+  btn.disabled = false; btn.textContent = old2;
+  btn.classList.add('flash');
+  setTimeout(() => btn.classList.remove('flash'), 900);
+};
+
+// ---- 音频设置（v1 同款三件套）----
+function loadAudio() {
+  const a = CFG?.audio || {};
+  $('a-gain').value = a.gain ?? 4.0;
+  $('a-agc').checked = a.agc !== false;
+  $('a-relay').checked = a.relay !== false;
+}
+$('a-save').onclick = async () => {
+  const r = await postConfig({ audio: {
+    gain: Number($('a-gain').value) || 4.0,
+    agc: $('a-agc').checked, relay: $('a-relay').checked } });
+  $('msg-audio').textContent = r.ok ? '已保存（即时生效）' : '失败：' + r.msg;
+  await loadState();
+};
+
+// ---- 语音页捕获（前端版）----
+bindCapture($('v-cap-btn'), $('v-cap-msg'),
+  (key, mods) => {
+    if (![...$('v-key').options].some(o => o.value === key))
+      $('v-key').add(new Option(key, key));
+    $('v-key').value = key;
+    [...$('v-mods').options].forEach(o => o.selected = mods.includes(o.value));
+  },
+  () => { $('v-cap-msg').textContent = '语音键目标只收键盘组合（鼠标不适用）'; }, true);
+
+// ---- 虚拟声卡：检测并安装（管理员直装十几秒；普通权限弹一次 UAC）----
+$('cable-install').onclick = async () => {
+  const btn = $('cable-install');
+  btn.disabled = true; $('msg-cable').textContent = '正在提交…';
+  try {
+    const r = await postJson('/api/cable/install', {});
+    $('msg-cable').textContent = (r.ok ? '✓ ' : '✗ ') + (r.msg || '');
+    await loadState();
+  } catch (e) { $('msg-cable').textContent = '错误：' + e; }
+  btn.disabled = false;
+};
+
+// ---- 基本设置 ----
+$('save').onclick = async () => {
+  const btn = $('save'); btn.disabled = true; $('msg').textContent = '保存中…';
+  const r = await postConfig({
+    ui_port: Number($('ui_port').value),
+    remote_addr: $('remote_addr').value.trim(),
+  });
+  $('msg').textContent = r.ok ? '已保存 ✓（端口变更重启后生效）' : '失败：' + r.msg;
+  btn.disabled = false; await loadState();
+};
+
+// ---- 日志（初始只拉最新 20 条，按需加载更多；自动刷新保持当前条数）----
+let logN = 20;
+async function loadLog() {
+  try {
+    const text = await (await fetch('/api/log?n=' + logN)).text();
+    const el = $('log');
+    // 自动刷新时别惊扰阅读：贴底才跟随新内容，翻上去查旧日志就保持原位
+    const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+    const st = el.scrollTop;
+    el.textContent = text;
+    if (stick) el.scrollTop = el.scrollHeight; else el.scrollTop = st;
+    $('log-count').textContent = `最新 ${text.split('\n').length} 行`;
+  } catch { $('log').textContent = '(读取失败)'; }
+}
+$('refresh').onclick = loadLog;
+$('more').onclick = () => { logN += 100; loadLog(); };
+setInterval(() => { if ($('auto').checked && $('p-logs').classList.contains('on')) loadLog(); }, 2000);
+
+loadState();
+// 全局状态轮询（旧版用 SSE 推送，这里先轮询：2s 足够，逻辑简单可靠）
+setInterval(async () => {
+  if (document.hidden) return;                    // 后台标签页不浪费
+  await loadState();
+  if ($('p-keys').classList.contains('on')) renderKeys();
+}, 2000);
+</script>
+</body>
+</html>

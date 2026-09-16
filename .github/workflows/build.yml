@@ -1,0 +1,33 @@
+name: build
+
+# CI：push / 手动触发 → 自动编译单文件 exe，产物挂 Artifact（Actions 页下载）
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # tap.dll（预编译入库）与 third-party/vbcable 由 csproj 嵌入；
+      # 发布管线（单文件/压缩/无 pdb）也收敛在 csproj 的 Release 组里；
+      # 随行安装脚本由 CopyToOutputDirectory 自动进输出目录
+      - name: Publish single-file exe
+        run: dotnet publish VibeMate -c Release -r win-x64 --self-contained -o release
+
+      - name: List output
+        shell: pwsh
+        run: Get-ChildItem release | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VibeMate-win-x64
+          path: release
+          if-no-files-found: error
