@@ -384,9 +384,16 @@ public sealed class KeysRole : IDisposable
             // 写失败也可能是 tap.dll 已被 WUDFHost 加载锁定（注入其实成功了）→ 权威判据 = 模块枚举
             if (!IsModuleLoaded(pid, "tap.dll"))
             {
-                Note = "缺少内嵌 tap.dll";
-                await _log("按键：tap.dll 资源释放失败");
-                return false;
+                // 目标宿主没有 DLL 且新副本写不进 —— 大概率「别的」旧 WUDFHost 锁着
+                // 文件（遥控器重连后换了宿主）。磁盘 DLL 还在：LoadLibrary 共享读
+                // 不受锁影响，协议握手（tap 3）兜得住版本差异 —— 直接注入现有文件。
+                if (!File.Exists(dll))
+                {
+                    Note = "缺少内嵌 tap.dll";
+                    await _log("按键：tap.dll 资源释放失败");
+                    return false;
+                }
+                await _log("按键：tap.dll 被旧宿主锁定无法更新 —— 注入磁盘现有副本");
             }
         }
         Process.Start(new ProcessStartInfo("icacls", $"\"{dll}\" /grant Everyone:RX")
