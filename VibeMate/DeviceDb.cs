@@ -31,18 +31,13 @@ internal static class DeviceDb
 
     static DeviceDb() => Load();
 
+    /// <summary>内置表版本（Load 时读出）。云端拉表/缓存只有 version ≥ 它才生效 ——
+    /// 防旧格式表（无 names 字段）覆盖新内置，把名称校验打回原形。</summary>
+    private static int _builtinVersion;
+
     private static void Load()
     {
-        try
-        {
-            if (File.Exists(CachePath)
-                && JsonNode.Parse(File.ReadAllText(CachePath)) is JsonObject cached)
-            {
-                lock (Lock) _table = cached;
-                return;
-            }
-        }
-        catch { /* 坏缓存 → 走内置 */ }
+        JsonObject? builtIn = null;
         try
         {
             using var st = typeof(DeviceDb).Assembly
@@ -50,14 +45,30 @@ internal static class DeviceDb
             if (st is not null)
             {
                 using var r = new StreamReader(st);
-                if (JsonNode.Parse(r.ReadToEnd()) is JsonObject builtIn)
-                {
-                    lock (Lock) _table = builtIn;
-                    return;
-                }
+                builtIn = JsonNode.Parse(r.ReadToEnd()) as JsonObject;
             }
         }
         catch { /* 内置也缺（构建配置错）→ Lookup 恒 miss，学习模式兜底 */ }
+        _builtinVersion = VersionOf(builtIn);
+
+        try
+        {
+            if (File.Exists(CachePath)
+                && JsonNode.Parse(File.ReadAllText(CachePath)) is JsonObject cached
+                && VersionOf(cached) >= _builtinVersion)
+            {
+                lock (Lock) _table = cached;
+                return;
+            }
+        }
+        catch { /* 坏缓存 → 走内置 */ }
+        lock (Lock) _table = builtIn;
+    }
+
+    private static int VersionOf(JsonObject? o)
+    {
+        try { return o?["version"]?.GetValue<int>() ?? 0; }
+        catch { return 0; }
     }
 
     /// <summary>启动后台刷新：拉到合法表才落缓存（版本管理交给 URL @main，
@@ -72,7 +83,8 @@ internal static class DeviceDb
                 {
                     using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
                     var text = await http.GetStringAsync(url);
-                    if (JsonNode.Parse(text) is JsonObject o && o["devices"] is JsonArray)
+                    if (JsonNode.Parse(text) is JsonObject o && o["devices"] is JsonArray
+                        && VersionOf(o) >= _builtinVersion)
                     {
                         Directory.CreateDirectory(Path.GetDirectoryName(CachePath)!);
                         await File.WriteAllTextAsync(CachePath, text);
@@ -86,9 +98,12 @@ internal static class DeviceDb
         });
     }
 
-    /// <summary>按 VID/PID 查表。命中返回 {vid,pid,brand,model,voice,report,keys}
-    /// 的拷贝；未命中 null（调用方引导学习模式）。</summary>
-    public static JsonObject? Lookup(string? vid, string? pid)
+    /// <summary>按 VID/PID + 蓝牙名查表。★三者缺一不可：小米普通版与 RC003 共用
+    /// 2717:32b8，仅 VID/PID 无法区分型号 —— 条目 names（忽略大小写、包含即中）
+    /// 须命中 name 才认定；names 缺失/名称空 → 跳过该条目（继续找同 VID/PID 的
+    /// 其他条目）。命中返回 {vid,pid,brand,model,voice,report,keys} 的拷贝；
+    /// 未命中 null（调用方引导学习模式）。</summary>
+    public static JsonObject? Lookup(string? vid, string? pid, string? name)
     {
         if (string.IsNullOrWhiteSpace(vid) || string.IsNullOrWhiteSpace(pid)) return null;
         JsonObject? arr;
@@ -97,9 +112,15 @@ internal static class DeviceDb
         if (devices is null) return null;
         foreach (var d in devices.OfType<JsonObject>())
         {
-            if (string.Equals(d["vid"]?.GetValue<string>(), vid, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(d["pid"]?.GetValue<string>(), pid, StringComparison.OrdinalIgnoreCase))
-                return (JsonObject)d.DeepClone();
+            if (!string.Equals(d["vid"]?.GetValue<string>(), vid, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(d["pid"]?.GetValue<string>(), pid, StringComparison.OrdinalIgnoreCase))
+                continue;
+            var patterns = d["names"] as JsonArray;
+            if (patterns is null || patterns.Count == 0 || string.IsNullOrWhiteSpace(name)
+                || !patterns.Any(p =>
+                    name.Contains(p?.GetValue<string>() ?? "", StringComparison.OrdinalIgnoreCase)))
+                continue;
+            return (JsonObject)d.DeepClone();
         }
         return null;
     }
