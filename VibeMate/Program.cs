@@ -148,7 +148,7 @@ internal static class Program
                                   () => new JsonObject
                                   {
                                       ["ok"] = true,
-                                      ["version"] = "2.1.0",
+                                      ["version"] = "2.1.1",
                                       ["pid"] = Environment.ProcessId,
                                       ["port"] = port,
                                       ["voice"] = new JsonObject
