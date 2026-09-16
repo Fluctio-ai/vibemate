@@ -201,8 +201,8 @@ public sealed class KeysRole : IDisposable
         await _log($"按键：管道已连接（WUDFHost {pid}）");
 
         // 下发当前指纹（学习进行中则全量上报）+ 已映射键的清位表
-        SendFilter(pipe);
-        SendBlock(pipe);
+        await WritePipeAsync(pipe, FilterBytes());
+        await SendBlockAsync(pipe);
 
         // 2) 报文循环
         using var reader = new StreamReader(pipe, Encoding.ASCII);
@@ -283,18 +283,27 @@ public sealed class KeysRole : IDisposable
         }
     }
 
-    /// <summary>下发报告指纹；学习进行中则 filter 0 0（DLL 全量上报，绝不清位）。</summary>
-    private void SendFilter(NamedPipeClientStream pipe)
+    /// <summary>当前 filter 命令字节；学习进行中则 filter 0 0（DLL 全量上报，绝不清位）。</summary>
+    private byte[] FilterBytes()
     {
         bool learning;
         lock (_learnLock) learning = _learn is not null;
         var p = Profile;
         var cmd = learning ? "filter 0 0" : $"filter {p.Len} {p.Id:x2}";
-        var bytes = Encoding.ASCII.GetBytes(cmd + "\n");
-        try { pipe.Write(bytes, 0, bytes.Length); } catch { /* 连接将断，主循环兜 */ }
+        return Encoding.ASCII.GetBytes(cmd + "\n");
     }
 
-    private void SendBlock(NamedPipeClientStream pipe)
+    /// <summary>带超时的管道写（500ms）。★绝不用无限期同步 Write：DLL/WUDFHost
+    /// 烂掉时（未知设备全量上报期间的诡异状态）对端不读、缓冲写满，Write 会
+    /// 永久挂起 —— 调用方在 HTTP 单线程 Loop 上就是全站按钮卡死，在 Session
+    /// 里就是断线重连自愈失效。超时即抛，让上层断开重来。</summary>
+    private static async Task WritePipeAsync(NamedPipeClientStream pipe, byte[] bytes)
+    {
+        using var cts = new CancellationTokenSource(500);
+        await pipe.WriteAsync(bytes, 0, bytes.Length, cts.Token);
+    }
+
+    private async Task SendBlockAsync(NamedPipeClientStream pipe)
     {
         var keys = _getKeys();
         var p = Profile;
@@ -304,7 +313,7 @@ public sealed class KeysRole : IDisposable
         // 清位槽偏移/宽度跟指纹走（Google=b[1..2] LE16，RC003 类=b[3] 单字节）
         var cmd = Encoding.ASCII.GetBytes(
             $"block @{p.Off}:{p.W} " + string.Join(' ', us) + "\n");
-        try { pipe.Write(cmd, 0, cmd.Length); } catch { /* 连接将断，主循环兜 */ }
+        await WritePipeAsync(pipe, cmd);
     }
 
     // ================= WUDFHost 定位（v1 keys.py:351 注册表法）=================
@@ -714,8 +723,18 @@ public sealed class KeysRole : IDisposable
     /// <summary>跨线程下发 filter 的快照惯用法（先拷局部再判空，统一收在这里）。</summary>
     private void PushFilterToPipe()
     {
+        // ★ 绝不在 HTTP 线程同步写：HTTP 是单线程串行 Loop，管道烂（对端不读、
+        //   缓冲满）时 Write 永久阻塞 → 轮询请求堆积、连接池占满 → 全站按钮
+        //   点不动（「开始设备学习」点了没反应就是这个）。后台写 + 超时；失败
+        //   即断开管道，Session 的读循环立刻断线重连、重发 filter —— 自愈闭环。
         var pipe = _pipe;
-        if (pipe is not null) SendFilter(pipe);
+        if (pipe is null) return;
+        var bytes = FilterBytes();
+        _ = Task.Run(async () =>
+        {
+            try { await WritePipeAsync(pipe, bytes); }
+            catch { try { pipe.Dispose(); } catch { } }
+        });
     }
 
     /// <summary>开始学习（幂等）：立即切 DLL 全量上报。返回当前快照。</summary>
