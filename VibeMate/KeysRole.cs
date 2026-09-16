@@ -626,8 +626,8 @@ public sealed class KeysRole : IDisposable
     //
     // 用户流程（2026-09-16 定稿）：开始 → 按一个键 → 展示「1/3」→ 继续按同一个键
     // → 每按一次计数 +1 → 满 3 次且报文一致 = 确认该键 → 前端打开表单起名+配动作
-    // → 保存后 next 学下一个键；期间出现不同报文 = mismatch（按错了键/旁边键盘
-    // 干扰），前端提示并自动结束，等用户重新开始。
+    // → 保存后 next 学下一个键；期间出现不同报文 = 重置回 waiting（GotOther 带
+    // 出原因供前端提示，学习不中断，不用重新点开始）。
     // 学习期间 DLL 全量上报且绝不清位（filter 0 0）—— 全量流里混着同一宿主其他
     // 蓝牙键鼠的报告，动了会弄坏人家的输入。
     //
@@ -643,9 +643,9 @@ public sealed class KeysRole : IDisposable
     {
         internal readonly DateTime Started = DateTime.Now;
         private byte[]? _press;                  // 按住中的报告（遇到 idle 帧结算成一次按键）
-        internal string State = "waiting";       // waiting → counting → confirmed | mismatch
-        internal ushort Usage;                   // counting/confirmed 的目标键；mismatch=期望键
-        internal ushort GotOther;                // mismatch 时实际收到的键
+        internal string State = "waiting";       // waiting → counting → confirmed（换键重置回 waiting）
+        internal ushort Usage;                   // counting/confirmed 的目标键
+        internal ushort GotOther;                // 上次重置时实际收到的键（0=无；下个有效按键清零）
         internal int Count;                      // 已记录次数（同一键）
         internal ReportProfile? Profile;         // 第一组有效按键对推导出的指纹
 
@@ -675,12 +675,15 @@ public sealed class KeysRole : IDisposable
             if (State == "waiting")
             {
                 Usage = u; Count = 1; State = "counting";
+                GotOther = 0;                            // 重置提示用过即清
                 return true;
             }
-            if (u != Usage)                                      // counting 中换了键/干扰
-            {
-                GotOther = u;
-                State = "mismatch";
+            if (u != Usage)                              // counting 中换了键/干扰：
+            {                                           // 重置不终止（2026-09-16 用户
+                GotOther = u;                            // 定稿）—— 学习会话保留，
+                State = "waiting";                       // 下一个有效按键成为新候选
+                Count = 0;
+                Usage = 0;
                 return true;
             }
             if (++Count >= 3) State = "confirmed";
@@ -778,8 +781,8 @@ public sealed class KeysRole : IDisposable
             {
                 ["learning"] = true,
                 ["state"] = ls.State,               // waiting|counting|confirmed|mismatch
-                ["usage"] = $"0x{ls.Usage:X4}",     // counting/confirmed=目标键；mismatch=期望键
-                ["got"] = $"0x{ls.GotOther:X4}",    // mismatch=实际收到的键
+                ["usage"] = $"0x{ls.Usage:X4}",     // counting/confirmed=目标键
+                ["got"] = $"0x{ls.GotOther:X4}",    // 非 0=刚发生过重置（前端提示用）
                 ["count"] = ls.Count,
                 ["profile"] = ls.Profile?.ToJson(),
             };

@@ -529,7 +529,9 @@ async function pollDevLearn() {
   if (!L.learning) return;
   const el = $('devlearn-cands');
   if (L.state === 'waiting') {
-    $('devlearn-note').textContent = '监听中 —— 按一下遥控器上你想学的键';
+    $('devlearn-note').textContent = (L.got && L.got !== '0x0000')
+      ? `⚠ 按出了不同的键（收到 ${L.got}）—— 已重置，请只按你想学的那个键`
+      : '监听中 —— 按一下遥控器上你想学的键';
   } else if (L.state === 'counting') {
     el.innerHTML = `<div style="margin:4px 0"><span class="pill">${L.usage}</span>` +
       ` 已记录 <b>${L.count} / 3</b> —— 继续按<b>同一个键</b>` +
@@ -540,12 +542,6 @@ async function pollDevLearn() {
       `<button onclick="cfgKey('${L.usage}')">给这个键起名 + 配动作</button>` +
       `<button class="ghost" onclick="devLearnNext()">跳过，学下一个键</button></div>` +
       `<p style="color:var(--mut);margin:6px 0 0">保存动作后自动继续学下一个键（或点「结束」）</p></div>`;
-  } else if (L.state === 'mismatch') {
-    // 提示写常驻可见的 note（endDevLearnUI 会收起候选区，别跟它打时序架）
-    try { await postJson('/api/learn', { action: 'stop' }); } catch {}
-    endDevLearnUI();
-    $('devlearn-note').textContent = `❌ 检测到不同的按键（期望 ${L.usage}，收到 ${L.got}）—— ` +
-      `中途换了键或有其他键盘在输入。请重新开始，3 次内只按同一个键。`;
   }
 }
 async function devLearnNext() { try { await postJson('/api/learn', { action: 'next' }); } catch {} }
