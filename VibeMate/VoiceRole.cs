@@ -131,12 +131,20 @@ public sealed class VoiceRole : IDisposable
             if (ct.IsCancellationRequested) break;
 
             // v1 退避纪律：1s 起指数翻倍封顶 45s；但 poke（遥控器按键活动）
-            // 随时打断 —— 它只在醒着的一小段窗口内能被连上
-            var backoff = Math.Min(45000, 1000 << Math.Min(fails, 6));
+            // 随时打断 —— 它只在醒着的一小段窗口内能被连上。
+            // v2.1.2 三档：6 次内指数快速恢复；7~20 次保持 45s（前 10 分钟
+            // 遥控器可能马上回来）；21 次起深退避 5 分钟 —— 连败到这地步
+            // 说明人早走了，45s 一探纯属刷日志；poke 照样秒醒，不 miss 窗口。
+            var backoff = fails <= 6 ? Math.Min(45000, 1000 << fails)
+                        : fails <= 20 ? 45000
+                        : 300000;
+            var wait = backoff >= 60000 ? $"{backoff / 60000}min" : $"{backoff / 1000}s";
             Note = fails >= 3
-                ? $"连不上（第 {fails} 次，{backoff / 1000}s 后重试）"
+                ? fails > 20
+                    ? $"深退避中（第 {fails} 次，{wait} 后重试，按键立刻恢复）"
+                    : $"连不上（第 {fails} 次，{wait} 后重试）"
                 : "未连上（遥控器休眠？按一下任意键会立刻重试）";
-            await _log($"语音：会话结束，{backoff / 1000}s 后重试（可被按键活动打断）");
+            await _log($"语音：会话结束，{wait} 后重试（可被按键活动打断）");
             var woke = false;
             for (int waited = 0; waited < backoff; waited += 100)
             {
