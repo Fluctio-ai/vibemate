@@ -819,6 +819,10 @@ $('autostart').onchange = async () => {
 // ---- 蓝牙设备列表 ----
 async function loadBtDevices(selected) {
   const sel = $('remote_addr');
+  // 进设置页时首轮 /api/state 可能还没回来（服务刚重启、页面因 pid 变化刚自动
+  // reload）—— CFG 为 null 时 cur 全兜底为空，下拉会停在「（不启用语音）」且
+  // 之后没人再同步，看起来就像配置丢了。loadState 幂等，先拉一次再填。
+  if (!CFG) { try { await loadState(); } catch {} }
   try {
     const r = await (await fetch('/api/btdevices')).json();
     if (!r.ok) { sel.innerHTML = `<option>${r.msg}</option>`; return; }
