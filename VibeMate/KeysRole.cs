@@ -123,6 +123,11 @@ public sealed class KeysRole : IDisposable
                 await Task.Delay(5000, ct).ContinueWith(_ => { });
                 continue;
             }
+            // 排障观测点：宿主 pid 漂移（注册表 HostPid 在多个 WUDFHost 间摆动，
+            // 设备重枚举换宿主时发生）—— 注了 A 报文却走 B，表现为连上了但零报告
+            if (pid != _lastWudfPid && _lastWudfPid is { } prev)
+                await _log($"按键：WUDFHost 变更 {prev} → {pid}");
+            _lastWudfPid = pid;
             try
             {
                 await Session(pid.Value, ct);
@@ -198,6 +203,7 @@ public sealed class KeysRole : IDisposable
         {
         Note = "已连接";
         Ready = true;
+        _zeroReportNoted = false;               // 新会话重新观察零报告（DLL 重注后 total 归零）
         await _log($"按键：管道已连接（WUDFHost {pid}）");
 
         // 下发当前指纹（学习进行中则全量上报）+ 已映射键的清位表
@@ -291,6 +297,13 @@ public sealed class KeysRole : IDisposable
             if (p.Length == 3 && long.TryParse(p[0], out var total))
             {
                 _mapper.NoteStats(total);
+                // 排障观测点：已连接却从未见过任何报告 —— 宿主找错（按键走别的
+                // WUDFHost）或指纹不符（报告全被 DLL 过滤掉）。只记一次不刷屏。
+                if (total == 0 && !_zeroReportNoted)
+                {
+                    _zeroReportNoted = true;
+                    _ = _log("按键：已连接但 hook 零报告（宿主找错或指纹不符）");
+                }
                 // 学习排障观测点：total=流经 hook 的报告数（20s 一拍）。学习时
                 // total 不涨 = DLL 没捕获到这台设备的读路径；涨但无 report = 过滤/变化判定问题
                 if (IsLearning)
@@ -437,6 +450,8 @@ public sealed class KeysRole : IDisposable
     }
 
     private long _lastInjectTry;
+    private int? _lastWudfPid;                    // 宿主漂移观测（见 MainLoop）
+    private bool _zeroReportNoted;                // 零报告观测只记一次（见 HandleLine hb）
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
