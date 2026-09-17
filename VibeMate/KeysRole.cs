@@ -204,6 +204,7 @@ public sealed class KeysRole : IDisposable
         Note = "已连接";
         Ready = true;
         _zeroReportNoted = false;               // 新会话重新观察零报告（DLL 重注后 total 归零）
+        _zeroReportStreak = 0;
         await _log($"按键：管道已连接（WUDFHost {pid}）");
 
         // 下发当前指纹（学习进行中则全量上报）+ 已映射键的清位表
@@ -297,13 +298,19 @@ public sealed class KeysRole : IDisposable
             if (p.Length == 3 && long.TryParse(p[0], out var total))
             {
                 _mapper.NoteStats(total);
-                // 排障观测点：已连接却从未见过任何报告 —— 宿主找错（按键走别的
-                // WUDFHost）或指纹不符（报告全被 DLL 过滤掉）。只记一次不刷屏。
-                if (total == 0 && !_zeroReportNoted)
+                HookTotal = total;
+                // 排障观测点：已连接却持续无报告 —— 宿主找错（按键走别的
+                // WUDFHost）或指纹不符（报告全被 DLL 过滤掉）。首拍天然 total=0，
+                // 连续 3 拍（约 60s）才记 + 只记一次不刷屏。
+                if (total == 0)
                 {
-                    _zeroReportNoted = true;
-                    _ = _log("按键：已连接但 hook 零报告（宿主找错或指纹不符）");
+                    if (++_zeroReportStreak >= 3 && !_zeroReportNoted)
+                    {
+                        _zeroReportNoted = true;
+                        _ = _log("按键：已连接但 hook 持续零报告（宿主找错或指纹不符）");
+                    }
                 }
+                else _zeroReportStreak = 0;
                 // 学习排障观测点：total=流经 hook 的报告数（20s 一拍）。学习时
                 // total 不涨 = DLL 没捕获到这台设备的读路径；涨但无 report = 过滤/变化判定问题
                 if (IsLearning)
@@ -452,6 +459,10 @@ public sealed class KeysRole : IDisposable
     private long _lastInjectTry;
     private int? _lastWudfPid;                    // 宿主漂移观测（见 MainLoop）
     private bool _zeroReportNoted;                // 零报告观测只记一次（见 HandleLine hb）
+    private int _zeroReportStreak;                // 连续零报告拍数（首拍天然 0，3 拍才记）
+
+    /// <summary>hook 累计报告数（hb 上报，20s 一拍）；在涨 = hook 活着。供 /api/state 排障。</summary>
+    public long HookTotal { get; private set; }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

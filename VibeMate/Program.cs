@@ -166,6 +166,7 @@ internal static class Program
                                       {
                                           ["ready"] = keys.Ready,
                                           ["note"] = keys.Note,
+                                          ["stats"] = new JsonObject { ["total"] = keys.HookTotal },
                                       },
                                       ["learn"] = keys.LearnSnapshot(),
                                       ["cable"] = new JsonObject
