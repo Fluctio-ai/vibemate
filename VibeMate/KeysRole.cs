@@ -428,6 +428,11 @@ public sealed class KeysRole : IDisposable
             if (WaitNamedPipeW($@"\\.\pipe\vibemote-keys-{pid}", 0)) return true;
             await Task.Delay(200);
         }
+        // 排障观测点：注入完成但管道 10s 不现 —— 模块还在不在直接分叉
+        // 「DLL 载入即自杀（CreateNamedPipe/hook 失败，见 tap_debug.log）」vs
+        // 「模块在但管道线程没起来（沙箱拦了建管道）」。普通权限快照读不到
+        // Session 0 模块（见上）会误报 False，管理员进程里才可信。
+        await _log($"按键：注入完成但 10s 无管道 —— 模块在目标进程: {IsModuleLoaded(pid, "tap.dll")}");
         return false;
     }
 
