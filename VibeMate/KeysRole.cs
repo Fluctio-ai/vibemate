@@ -495,7 +495,10 @@ public sealed class KeysRole : IDisposable
         public static extern bool CloseHandle(IntPtr h);
         [DllImport("advapi32.dll", SetLastError = true)]
         public static extern bool OpenProcessToken(IntPtr h, uint access, out IntPtr tok);
-        [DllImport("advapi32.dll", SetLastError = true)]
+        // ★ CharSet 必须 Unicode：函数名带 W 后缀时默认 Ansi 编组会把特权名喂成
+        //   乱码 → LookupPrivilegeValue 永远失败（err=1313）→ SeDebugPrivilege
+        //   从未真正启用过，一直靠 WUDFHost 的 DACL 放行管理员兜底
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         public static extern bool LookupPrivilegeValueW(string? sys, string name, out LUID luid);
         [DllImport("advapi32.dll", SetLastError = true)]
         public static extern bool AdjustTokenPrivileges(IntPtr tok, bool disableAll,
