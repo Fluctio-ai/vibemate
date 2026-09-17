@@ -11,6 +11,12 @@ internal static class Program
     private static string _baseDir = AppContext.BaseDirectory;
     private static readonly string LogPath = Path.Combine(_baseDir, "vibe.log");
 
+    /// <summary>csproj <Version> 编译注入的程序集版本 —— ping/state 的唯一版本源。
+    /// 别再手写 "2.1.x" 字符串：v2.1.1 时代 ping/state 两处硬编码，发版忘了同步，
+    /// 状态页版本就停在旧号（用户实测踩坑）。</summary>
+    internal static string AppVersion =>
+        typeof(Program).Assembly.GetName().Version is { } v ? v.ToString(3) : "?";
+
     [STAThread]
     private static int Main(string[] args)
     {
@@ -148,7 +154,7 @@ internal static class Program
                                   () => new JsonObject
                                   {
                                       ["ok"] = true,
-                                      ["version"] = "2.1.1",
+                                      ["version"] = AppVersion,
                                       ["pid"] = Environment.ProcessId,
                                       ["port"] = port,
                                       ["voice"] = new JsonObject

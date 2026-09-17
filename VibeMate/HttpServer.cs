@@ -88,7 +88,7 @@ public sealed class HttpServer
             switch (path)
             {
                 case "/api/ping":
-                    ReplyJson(ctx, 200, new JsonObject { ["ok"] = true, ["version"] = "2.1.1" });
+                    ReplyJson(ctx, 200, new JsonObject { ["ok"] = true, ["version"] = Program.AppVersion });
                     return;
                 case "/api/state":
                     ReplyJson(ctx, 200, _stateBuilder());
