@@ -8,7 +8,8 @@ namespace VibeMate;
 
 /// <summary>
 /// 托盘图标（用户定稿：无窗口主程序 + 托盘 + 点击打开浏览器设置页）。
-/// 左键单击 → 打开 http://127.0.0.1:&lt;port&gt;；右键 → 菜单（设置/重启/退出）。
+/// 左键双击 → 打开 http://127.0.0.1:&lt;port&gt;（2026-09-18 用户改定：单击误触多，
+/// 双击才开）；右键 → 菜单（设置/重启/退出）。
 ///
 /// 动效素材是嵌入资源 VibeMate.tray.icons.png（3×3 宫格，2026-09-16 用户出图并
 /// 重新抠好透明底）：列=状态组（第 1 列待机 / 第 2 列语音输入 / 第 3 列普通按键），
@@ -64,7 +65,9 @@ public sealed class TrayIcon : IDisposable
         // ★ 必须在创建过控件（ContextMenuStrip 即是）之后再取：WindowsForms 的
         //   同步上下文是首个控件构造时装上的，太早取会是 null
         _ui = SynchronizationContext.Current;
-        _icon.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) OpenBrowser(); };
+        // 双击才开设置页：单击太容易误触（路过点一下就弹浏览器）。菜单里的「设置」
+        // 项仍是单击可达，双击只是给「点图标直达」这条路加一道确认
+        _icon.MouseDoubleClick += (_, e) => { if (e.Button == MouseButtons.Left) OpenBrowser(); };
         _anim.Tick += (_, _) => Tick();
         BuildFrames();
         _anim.Start();                        // 常开：待机呼吸也是循环，三态共用这一个定时器
