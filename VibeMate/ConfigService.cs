@@ -66,7 +66,7 @@ public sealed class ConfigService : IDisposable
             foreach (var (k, v) in patch)
             {
                 // 白名单：v1 兼容字段 + v2 devices + cable_optout（卸载标记，见 Program 看护）
-                if (k is "ui_port" or "lang" or "remote_addr"
+                if (k is "ui_port" or "remote_addr"
                     or "voice" or "audio" or "keys" or "devices" or "_comment"
                     or "cable_optout")
                     merged[k] = v?.DeepClone();
@@ -91,8 +91,6 @@ public sealed class ConfigService : IDisposable
                 || port is < 1 or > 65535)
                 return (false, "ui_port 必须是 1-65535");
         }
-        if (cfg["lang"] is { } l && l.GetValue<string>() is not ("zh" or "en"))
-            return (false, "lang 只能是 zh|en");
         if (cfg["cable_optout"] is { } co
             && co.GetValueKind() != JsonValueKind.True && co.GetValueKind() != JsonValueKind.False)
             return (false, "cable_optout 必须是布尔值");
@@ -194,7 +192,6 @@ public sealed class ConfigService : IDisposable
         return new JsonObject
         {
             ["_comment"] = "VibeMate v2 配置。唯一权威；界面保存即写回此文件。",
-            ["lang"] = "zh",
             ["ui_port"] = 8787,
             ["remote_addr"] = "",
             ["voice"] = new JsonObject { ["mode"] = "hold", ["key"] = "CTRL",
