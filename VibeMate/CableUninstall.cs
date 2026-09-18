@@ -63,8 +63,18 @@ internal static class CableUninstall
         {
             var (rc, outText) = await RunAsync("pnputil",
                 $"/delete-driver {name} /uninstall /force", 180_000);
-            if (rc == 0) { await log($"驱动包已删（{name}）"); driverRemoved = true; break; }
-            await log($"驱动包 {name} 这个写法删不掉（{Tail(outText)}），试另一个名字");
+            // ★ 3010 = ERROR_SUCCESS_REBOOT_REQUIRED：删除已受理、重启才生效 ——
+            //   驱动被占用（常见：本程序自己的语音出口正抓着 CABLE Input，内核驱动
+            //   NOT_STOPPABLE）时必走这条。按「删不掉」处理是错的（v2.1.4 实测：
+            //   误试原始名 + 最终误报失败），它是成功，只是要重启。
+            if (rc == 0 || rc == 3010)
+            {
+                if (rc == 3010)
+                { await log($"驱动包 {name} 删除已受理 —— 需重启完成（pnputil 3010）"); rebootAdvised = true; }
+                else await log($"驱动包已删（{name}）");
+                driverRemoved = true; break;
+            }
+            await log($"驱动包 {name} 删不掉（{Tail(outText)}），试另一个名字");
         }
         if (!driverRemoved) rebootAdvised = true;        // 包还挂在 DriverStore：重装前必须清掉
 
@@ -187,6 +197,15 @@ internal static class CableUninstall
                 : "已卸载";
             await log(msg);
             return (true, msg);
+        }
+        // 端点仍在 + 删除已受理（3010 待重启）＝卸载进行中而非失败 —— 内核驱动
+        // 卸载要重启，端点跟着驱动一起消失，这条必须报成功，否则用户会对着
+        // 「失败」字样疑惑（v2.1.4 实测踩坑）
+        if (rebootAdvised && driverRemoved)
+        {
+            var accepted = "卸载已受理 —— 重启一次系统后设备端点消失、卸载彻底完成";
+            await log(accepted);
+            return (true, accepted);
         }
         var fail = "没卸干净（端点仍在 —— 多半驱动被占用）：重启一次系统即可彻底移除";
         await log(fail);
