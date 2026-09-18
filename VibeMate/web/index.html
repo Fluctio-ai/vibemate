@@ -173,7 +173,7 @@
       <h3 style="color:var(--warn)" id="learn-title">学习模式进行中 —— 现在按遥控器上的任意键</h3>
       <div class="listen-hint" id="learn-hint">等待按键…</div>
       <div id="learn-form" style="display:none">
-        <label>检测到按键（usage 是遥控器发来的原始编号，任何遥控器通用）</label>
+        <label>检测到按键（遥控器发来的原始编号，任何遥控器通用）</label>
         <div><span class="pill" id="learn-usage">—</span></div>
         <label>给这个键起个名字（显示用；已知 Google 布局的键已预填）</label>
         <input id="m-keyname" placeholder="例如：确认 / 上 / 快进">
@@ -252,7 +252,7 @@
       <div style="margin-top:14px"><button id="v-save">保存</button><span id="msg-voice" class="msg" role="status"></span></div>
     </div>
     <div class="card"><h3>音频增强</h3>
-      <label>固定增益 gain（AGC 关闭时生效，默认 4.0）</label>
+      <label>固定增益（AGC 关闭时生效，默认 4.0）</label>
       <input id="a-gain" type="number" step="0.5" min="0.5" max="24">
       <label style="display:flex;gap:8px;align-items:center;margin-top:12px">
         <input type="checkbox" id="a-agc" style="width:auto">自动增益 AGC（推荐开：按人声音量自动调）
@@ -286,7 +286,7 @@
   <section class="page" id="p-settings">
     <h2>设置</h2>
     <div class="card"><h3>基本</h3>
-      <label>界面端口 ui_port</label>
+      <label>界面端口（被占时自动顺延到高位端口）</label>
       <input id="ui_port" type="number" min="1" max="65535">
       <label>遥控器蓝牙地址（从已配对设备选择；留空 = 语音不启用）</label>
       <div class="toolbar" style="margin:0">
