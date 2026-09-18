@@ -10,7 +10,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>VibeMate</AssemblyName>
-    <Version>2.1.3</Version>
+    <Version>2.1.4</Version>
     <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
   </PropertyGroup>
   <!-- 发布管线收敛一处：build.yml / README 手册命令只传 -c Release 即可，

@@ -50,7 +50,8 @@ internal static class CableSetup
         return _cached;
     }
 
-    private static void Invalidate() => _checkedUtc = DateTime.MinValue;
+    // internal：卸载侧（CableUninstall）结束后也要失效重探 —— 两边共用一套缓存语义
+    internal static void Invalidate() => _checkedUtc = DateTime.MinValue;
 
     private static string DriverDir => Path.Combine(Environment.GetFolderPath(
         Environment.SpecialFolder.CommonApplicationData), "VibeMate", "vbcable");

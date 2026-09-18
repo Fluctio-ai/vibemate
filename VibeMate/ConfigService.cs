@@ -65,9 +65,10 @@ public sealed class ConfigService : IDisposable
             merged = JsonNode.Parse(_root.ToJsonString(JsonOpts))!.AsObject();
             foreach (var (k, v) in patch)
             {
-                // 白名单：v1 兼容字段 + v2 devices
+                // 白名单：v1 兼容字段 + v2 devices + cable_optout（卸载标记，见 Program 看护）
                 if (k is "ui_port" or "lang" or "remote_addr"
-                    or "voice" or "audio" or "keys" or "devices" or "_comment")
+                    or "voice" or "audio" or "keys" or "devices" or "_comment"
+                    or "cable_optout")
                     merged[k] = v?.DeepClone();
             }
         }
@@ -92,6 +93,9 @@ public sealed class ConfigService : IDisposable
         }
         if (cfg["lang"] is { } l && l.GetValue<string>() is not ("zh" or "en"))
             return (false, "lang 只能是 zh|en");
+        if (cfg["cable_optout"] is { } co
+            && co.GetValueKind() != JsonValueKind.True && co.GetValueKind() != JsonValueKind.False)
+            return (false, "cable_optout 必须是布尔值");
         return (true, "");
     }
 

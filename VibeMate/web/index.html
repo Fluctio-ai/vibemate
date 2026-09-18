@@ -126,6 +126,7 @@
     <h2>状态</h2>
     <div class="card"><h3>运行</h3>
       <div class="row"><span class="k">版本</span><span id="s-ver">—</span></div>
+      <div class="row"><span class="k">更新</span><span id="s-update">—</span></div>
       <div class="row"><span class="k">进程</span><span id="s-pid">—</span></div>
       <div class="row"><span class="k">界面地址</span><span id="s-url">—</span></div>
       <div class="row"><span class="k">开源地址</span><span>
@@ -270,6 +271,7 @@
         仍不行就手动运行 %ProgramData%\VibeMate\vbcable\VBCABLE_Setup_x64.exe。
       </div>
       <button class="ghost" id="cable-install">检测并安装</button>
+      <button class="ghost" id="cable-uninstall" style="display:none;color:var(--warn)">卸载</button>
       <span id="msg-cable" class="msg" role="status"></span>
     </div>
     <div class="card"><h3>链路状态</h3>
@@ -350,7 +352,8 @@
         · 一切异常先看「日志」页（对应程序目录 vibe.log；[CABLE] 段是虚拟声卡安装流水）；<br>
         · 蓝牙连不上：遥控器休眠了，按任意键唤醒再等几秒；<br>
         · 按键没反应：看状态页「按键」通道是否「已连接」，未连接先点托盘「重启」；<br>
-        · 完整卸载：删除程序目录 + 任务计划程序里的 VibeMate 任务 + %ProgramData%\VibeMate。
+        · 完整卸载：到「语音」页点「卸载」可移除虚拟声卡（之后不再自动装回）；
+        删除程序目录 + 任务计划程序里的 VibeMate 任务 + %ProgramData%\VibeMate。
       </div>
     </div>
   </section>
@@ -421,6 +424,14 @@ async function loadState() {
   srvPid = s.pid;
   CFG = s.config;
   $('s-ver').textContent = 'v' + s.version;
+  // 更新提示：检查在服务端做（离线时 latest 为 null，静默不吵）
+  const up = s.update || {};
+  $('s-update').innerHTML = !up.latest
+    ? '<span style="color:var(--mut)">未知（未查到或离线）</span>'
+    : up.available
+      ? `<a href="https://github.com/fluctio-ai/vibemate/releases/latest" target="_blank" rel="noopener"
+           style="color:var(--warn);text-decoration:none">v${up.latest} 可更新 → 下载</a>`
+      : '<span style="color:var(--mut)">已是最新</span>';   // 本地领先线上 tag（开发版）也落这里，不显示旧号免歧义
   $('s-pid').textContent = s.pid;
   $('s-url').textContent = `http://127.0.0.1:${s.port}`;
   const st = (ok, note) => `<i class="dot ${ok ? 'ok' : 'off'}"></i>${note}`;
@@ -431,6 +442,7 @@ async function loadState() {
   $('s-cable').innerHTML = st(cabOk, cabTxt);
   $('cable-state').innerHTML = st(cabOk, cabOk ? '已就绪' : '未安装');
   $('h-cable').innerHTML = st(cabOk, cabTxt);
+  $('cable-uninstall').style.display = cabOk ? '' : 'none';   // 没装就没得卸
   $('keys-note').textContent = s.keys?.note || '';
   $('v-state').textContent = (s.voice?.connected ? '● ' : '○ ') + (s.voice?.note || '');
   if (!$('v-mode').dataset.loaded) {
@@ -877,6 +889,24 @@ $('cable-install').onclick = async () => {
   btn.disabled = true; $('msg-cable').textContent = '正在提交…';
   try {
     const r = await postJson('/api/cable/install', {});
+    $('msg-cable').textContent = (r.ok ? '✓ ' : '✗ ') + (r.msg || '');
+    await loadState();
+  } catch (e) { $('msg-cable').textContent = '错误：' + e; }
+  btn.disabled = false;
+};
+
+// ---- 虚拟声卡：卸载（系统级驱动，确认框把三件事说清楚：别人可能也在用 /
+//      不再自动装回 / 建议重启）----
+$('cable-uninstall').onclick = async () => {
+  if (!confirm('卸载 VB-CABLE 虚拟声卡？\n\n' +
+      '· 它是系统级音频驱动：OBS / 变声器等软件可能也在用，卸载后它们没声；\n' +
+      '· 语音功能将不可用，直到重新安装；\n' +
+      '· 卸载后本程序不再自动装回（「检测并安装」随时可装回）；\n' +
+      '· 建议卸载后重启一次系统。')) return;
+  const btn = $('cable-uninstall');
+  btn.disabled = true; $('msg-cable').textContent = '正在提交…';
+  try {
+    const r = await postJson('/api/cable/uninstall', {});
     $('msg-cable').textContent = (r.ok ? '✓ ' : '✗ ') + (r.msg || '');
     await loadState();
   } catch (e) { $('msg-cable').textContent = '错误：' + e; }

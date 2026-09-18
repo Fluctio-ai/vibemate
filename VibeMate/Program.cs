@@ -32,6 +32,15 @@ internal static class Program
             return okC ? 0 : 1;
         }
 
+        // 提权一次性卸载 VB-CABLE 子进程（同上；卸载标记 cable_optout 由发起方
+        // 的主进程先写进 config —— 子进程没有 ConfigService，不抢这份职责）
+        if (args.Length > 0 && args[0] == "--uninstall-cable")
+        {
+            var (okU, msgU) = CableUninstall.UninstallAsync(LogAs("CABLE")).GetAwaiter().GetResult();
+            Log("CABLE", $"--uninstall-cable 结果：{(okU ? "成功" : "失败")} {msgU}");
+            return okU ? 0 : 1;
+        }
+
         // 提权一次性建计划任务子进程（install.ps1 / deploy.ps1 共用）：
         // schtasks 的参数只在 HttpServer 存一份
         if (args.Length > 0 && args[0] == "--setup-task")
@@ -173,6 +182,7 @@ internal static class Program
                                       {
                                           ["installed"] = CableSetup.Installed(),
                                       },
+                                      ["update"] = UpdateCheck.Snapshot(),
                                       ["config"] = config.Snapshot(),
                                   },
                                   EventsSince,
@@ -181,6 +191,7 @@ internal static class Program
         keys.ReloadMapping();               // 启动即装载映射表（ConfigChanged 只覆盖后续变更）
         keys.ReloadProfile();               // 启动即装载报告指纹（同上）
         DeviceDb.RefreshAsync();            // 已知设备表后台刷新（内置兜底，失败静默）
+        UpdateCheck.Start();                // 版本检查后台循环（结果进 /api/state.update）
         http.Start();
         voice.Start();
         keys.Start();
@@ -240,11 +251,16 @@ internal static class Program
         }
 
         // 虚拟声卡看护：没装 VB-CABLE → 管理员下全自动静默装（驱动内嵌 exe）；
-        // 普通权限不弹 UAC 打扰 —— 界面语音页有手动按钮（详见试用说明.txt）
+        // 普通权限不弹 UAC 打扰 —— 界面语音页有手动按钮（详见试用说明.txt）。
+        // ★ cable_optout：用户从界面卸载过 → 跳过。不看这个标记的话，下次开机
+        //   看护会把用户刚卸的东西原样装回来 —— 在用户眼里就是「卸不掉的 bug」
+        //  （v1 千问开关的同款教训）。想装回：语音页「检测并安装」即清除标记。
         _ = Task.Run(async () =>
         {
             try
             {
+                if (config.Get("cable_optout", false))
+                { Log("CABLE", "用户已卸载虚拟声卡（cable_optout）—— 跳过自动安装"); return; }
                 if (CableSetup.Installed()) return;
                 if (!HttpServer.IsAdmin())
                 {

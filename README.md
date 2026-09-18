@@ -24,6 +24,8 @@
 - **托盘动效**：待机呼吸 / 按键快闪 / 语音声浪三态动画（3×3 宫格素材）。
 - **单文件分发**：网页、注入 DLL、VB-CABLE 驱动、安装脚本全部嵌在一个 exe 里；
   首启自动释放「一键安装.bat」，自动静默安装虚拟声卡。
+- **声卡管家**：虚拟声卡自动静默安装，语音页可一键卸载（之后不再自动装回）。
+- **更新提示**：后台检查 GitHub Releases，有新版本时状态页直接给下载链接。
 - **安全**：HTTP 只监听 127.0.0.1；POST 双闸（Origin 白名单 + 强制 JSON）。
 
 ## 下载
@@ -78,6 +80,8 @@ push 到 main 即触发 GitHub Actions 自动编译（`.github/workflows/build.y
 | `HttpServer.cs` | 127.0.0.1 静态页 + JSON API + 计划任务管理 |
 | `ConfigService.cs` | config.json 唯一读写者（原子替换 + 热推送） |
 | `CableSetup.cs` | VB-CABLE 静默安装（解压 → pnputil → SwDeviceCreate） |
+| `CableUninstall.cs` | VB-CABLE 静默卸载（服务键/注册表/驱动包白名单清理） |
+| `UpdateCheck.cs` | 版本检查后台循环（GitHub Releases → /api/state） |
 | `web/index.html` | 单文件离线控制台（状态/映射/语音/设置/帮助/日志） |
 | `tap/tap.c` | 注入 DLL：钩 WUDFHost 的 HID IOCTL，屏蔽+上报（MinHook） |
 

@@ -130,7 +130,8 @@ public sealed class HttpServer
             }
         }
         else if (req.HttpMethod == "POST" && path is "/api/config" or "/api/capture/start"
-                 or "/api/autostart" or "/api/cable/install" or "/api/learn")
+                 or "/api/autostart" or "/api/cable/install" or "/api/cable/uninstall"
+                 or "/api/learn")
         {
             if (!Guard(ctx)) return;
             if (path == "/api/learn")
@@ -165,6 +166,10 @@ public sealed class HttpServer
                 //   它自己会看到。管理员直装；普通权限 runas 拉自身 --install-cable
                 //  （一次 UAC，装完即退 —— 对齐 --inject-only 的哲学）。
                 if (!Guard(ctx)) return;
+                // 手动安装 = 用户明确要装回：清掉卸载时设的 optout（否则下次开机
+                // 看护仍会跳过，装了也白装）
+                if (_config.Get("cable_optout", false))
+                    _config.Apply(new JsonObject { ["cable_optout"] = false });
                 if (!CableSetup.Installed())
                 {
                     if (IsAdmin())
@@ -181,6 +186,33 @@ public sealed class HttpServer
                     ["ok"] = true,
                     ["installed"] = CableSetup.Installed(),
                     ["msg"] = "安装已开始（若弹 UAC 请点「是」）—— 状态约 10-30 秒后自动刷新",
+                });
+                return;
+            }
+            if (path == "/api/cable/uninstall")
+            {
+                // 虚拟声卡卸载（镜像 install 的异步纪律：丢后台立即回话）。
+                // ★ 先写 cable_optout 再动手 —— 不写的话下次开机看护会把用户刚卸的
+                //   驱动自动装回来（v1 千问开关同款教训）；用户装回的唯一入口
+                //   （手动安装按钮）会清标记。管理员直卸；普通权限 runas 拉自身
+                //   --uninstall-cable（一次 UAC，卸完即退）。
+                _config.Apply(new JsonObject { ["cable_optout"] = true });
+                if (CableSetup.Installed())
+                {
+                    if (IsAdmin())
+                        _ = Task.Run(async () =>
+                        {
+                            var (ok, msg) = await CableUninstall.UninstallAsync(Program.LogAs("CABLE"));
+                            Program.Log("CABLE", $"手动卸载结果：{(ok ? "成功" : "失败")} {msg}");
+                        });
+                    else
+                        _ = Task.Run(() => Program.RunSelfElevated("--uninstall-cable", 120000));
+                }
+                ReplyJson(ctx, 200, new JsonObject
+                {
+                    ["ok"] = true,
+                    ["installed"] = CableSetup.Installed(),
+                    ["msg"] = "卸载已开始 —— 状态几秒后自动刷新（可能建议重启一次）",
                 });
                 return;
             }
