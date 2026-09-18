@@ -78,6 +78,12 @@ internal static class CableUninstall
         catch { }
     }
 
+    // mtime 缓存：/api/state 每 2s 一问，文件没变不重读重解析。★ 对外只给
+    // DeepClone —— JsonNode 有父引用，同一实例塞进第二个 state 对象会抛
+    //「already has a parent」把 stateBuilder 炸成 500（实测教训），正本不出库
+    private static JsonObject? _snapCache;
+    private static DateTime _snapMtime;
+
     /// <summary>进度快照（/api/state.cable.uninstall 数据源）。null = 无卸载可报。
     /// 清理时机（只在非 running 时）：
     ///   · 端点已消失（reboot=true 的场景 = 用户重启过）→ 提醒使命完成，删文件；
@@ -87,19 +93,24 @@ internal static class CableUninstall
     {
         try
         {
-            if (!File.Exists(StatePath)) return null;
+            if (!File.Exists(StatePath)) { _snapCache = null; return null; }
+            var mtime = File.GetLastWriteTimeUtc(StatePath);
+            if (_snapCache is not null && mtime == _snapMtime) return (JsonObject)_snapCache.DeepClone();
+            _snapCache = null;
             if (JsonNode.Parse(File.ReadAllText(StatePath)) is not JsonObject o) return null;
             var phase = o["phase"]?.GetValue<string>() ?? "";
             if (phase == "running")
             {
-                if ((DateTime.UtcNow - File.GetLastWriteTimeUtc(StatePath)).TotalMinutes > 10)
+                if ((DateTime.UtcNow - mtime).TotalMinutes > 10)
                 { try { File.Delete(StatePath); } catch { } return null; }
-                return o;
+                _snapMtime = mtime; _snapCache = o;
+                return (JsonObject)o.DeepClone();
             }
             // 到这一步安装缓存必是热的（stateBuilder 刚问过 Installed），不产生额外枚举
             if (!CableSetup.Installed())
             { try { File.Delete(StatePath); } catch { } return null; }
-            return o;
+            _snapMtime = mtime; _snapCache = o;
+            return (JsonObject)o.DeepClone();
         }
         catch { return null; }
     }
@@ -214,9 +225,11 @@ internal static class CableUninstall
             var siblings = subs.Where(s => !s.Equals(VendorSubKey, StringComparison.OrdinalIgnoreCase)).ToArray();
             if (siblings.Length > 0)
                 await log($@"VB-Audio 下还有 {string.Join("、", siblings)}（Voicemeeter 之类），一律不动");
-            else if (subs.Length > 0 || Registry.LocalMachine.OpenSubKey(VendorKey) is not null)
+            else if (Registry.LocalMachine.OpenSubKey(VendorKey) is not null)
             {
-                Registry.LocalMachine.DeleteSubKey(VendorKey, false);   // 空壳才删（有子键会抛，兜在 catch）
+                // 能走到这 = 厂商键要么刚删空、要么本来就只剩值 —— DeleteSubKey(false)
+                // 只删无子键的键，真有意外子键会抛给下面的 catch，不会误删
+                Registry.LocalMachine.DeleteSubKey(VendorKey, false);
                 await log(@"HKLM\SOFTWARE\VB-Audio 已空，顺手删掉空壳键");
             }
         }

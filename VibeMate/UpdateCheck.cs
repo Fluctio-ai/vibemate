@@ -17,8 +17,10 @@ internal static class UpdateCheck
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
-    // volatile：HTTP 线程写、/api/state 读。null = 还没查到/查不了（离线、被墙、限流）
+    // volatile：HTTP 线程写、/api/state 读。latest null = 还没查到/查不了（离线、被墙、限流）。
+    // available 在 CheckOnce 算好 —— Snapshot 每 2s 被问一次，别每次重解析两个 Version 串
     private static volatile string? _latest;
+    private static volatile bool _available;
 
     /// <summary>启动后台循环（Main 调一次）。首查延迟避开启动高峰，之后 6h 一拍。
     /// 失败保持上次结果不重试加速 —— 版本检查没有时效性，没必要对不可达的
@@ -48,16 +50,16 @@ internal static class UpdateCheck
             var tag = json?["tag_name"]?.GetValue<string>() ?? "";
             var ver = tag.TrimStart('v', 'V');
             // 解析不出三段版本号的 tag（将来若有 -beta 之类）只按能解析的部分记
-            if (Version.TryParse(ver, out _)) _latest = ver;
+            if (Version.TryParse(ver, out var l))
+            {
+                _latest = ver;
+                _available = Version.TryParse(Program.AppVersion, out var cur) && l > cur;
+            }
         }
         catch { /* 离线/被墙/限流：保持上次结果 */ }
     }
 
     /// <summary>/api/state 的 update 段。available = latest 严格大于当前程序集版本。</summary>
     internal static JsonObject Snapshot()
-    {
-        var available = Version.TryParse(_latest, out var l)
-                        && Version.TryParse(Program.AppVersion, out var cur) && l > cur;
-        return new JsonObject { ["latest"] = _latest, ["available"] = available };
-    }
+        => new() { ["latest"] = _latest, ["available"] = _available };
 }

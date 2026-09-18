@@ -597,10 +597,11 @@ async function postJson(url, body) {
 async function postConfig(patch) { return postJson('/api/config', patch); }
 
 // ---- 设备学习（未知遥控器：串行单键，每键按 3 次一致才确认）----
-let devLearning = false, devPoll = null, lastCands = '';
+let devLearning = false, devPoll = null;
 // 轮询写的区域只在内容变化时才动 DOM：confirmed 后每 300ms 无脑重写 innerHTML
 // 会在用户点击的间隙销毁按钮节点，click 落在已移除的元素上 —— onclick 被吞
-function setCands(html) { if (html !== lastCands) { lastCands = html; $('devlearn-cands').innerHTML = html; } }
+//（实现统一走 setHtmlIfChanged，纪律说明见其定义处）
+function setCands(html) { setHtmlIfChanged($('devlearn-cands'), html); }
 // 轮询节奏跟着状态机走：counting/waiting（等遥控器按键）300ms 一拍；
 // confirmed 即停（状态稳定等用户操作，空转打接口没意义）——「跳过/保存」回
 // waiting 再恢复，「结束」彻底停
@@ -621,7 +622,6 @@ $('devlearn-start').onclick = async () => {
 function endDevLearnUI() {
   devLearning = false;
   stopDevPoll();               // 彻底结束：轮询停（防抖里已判 null，重复调无害）
-  lastCands = '';
   $('devlearn-start').style.display = '';
   $('devlearn-stop').style.display = 'none';
   $('devlearn-cands').style.display = 'none';
