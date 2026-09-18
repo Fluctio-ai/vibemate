@@ -35,13 +35,22 @@ if (-not $dotnet) { Write-Host 'PUBLISH FAILED: dotnet SDK not found in PATH'; e
 & $dotnet publish $proj -c Release -r win-x64 --self-contained -o $rel
 if ($LASTEXITCODE -ne 0) { Write-Host 'PUBLISH FAILED'; exit 1 }
 
-# 4) 起服务 + 冒烟（刚起的监听器可能晚一两秒就绪 —— 重试 10s）
+# 4) 起服务 + 冒烟（刚起的监听器可能晚一两秒就绪；端口被占时 exe 会顺延 ——
+#    候选依次试：配置端口 → 8787 → 高位段前 10 个，对齐 HttpServer.Bind 的顺延规则）
 schtasks /Run /TN $tn | Out-Null
-$smoke = $null
-for ($i = 0; $i -lt 10; $i++) {
-    Start-Sleep -Seconds 1
-    try { $smoke = Invoke-RestMethod "http://127.0.0.1:8787/api/ping"; break } catch {}
+$ports = @(8787) + (47887..47896)
+try {
+    $cfgPort = [int](Get-Content (Join-Path $rel 'config.json') -Raw | ConvertFrom-Json).ui_port
+    if ($cfgPort) { $ports = @($cfgPort) + $ports }
+} catch {}
+$smoke = $null; $smokePort = 0
+foreach ($p in ($ports | Select-Object -Unique)) {
+    for ($i = 0; $i -lt 5; $i++) {
+        Start-Sleep -Seconds 1
+        try { $smoke = Invoke-RestMethod "http://127.0.0.1:$p/api/ping"; $smokePort = $p; break } catch {}
+    }
+    if ($smoke) { break }
 }
-if ($smoke) { Write-Host "SMOKE OK: version=$($smoke.version)" }
+if ($smoke) { Write-Host "SMOKE OK: version=$($smoke.version) port=$smokePort" }
 else { Write-Host "SMOKE FAILED （看 $rel\vibe.log）" }
 Write-Host "DEPLOYED via scheduled task $tn (logon-autostart enabled)"

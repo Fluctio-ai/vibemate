@@ -41,11 +41,40 @@ public sealed class HttpServer
         _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
     }
 
-    public void Start()
+    public bool Start()
     {
+        // ★ 绑定放调用线程：成败当场可知（原来在 Loop 线程里才 Start，端口被占时
+        //   调用方毫无感知，顺延逻辑无从谈起）。日志不打在这 —— 顺延策略是装配层的事
+        try { _listener.Start(); }
+        catch (Exception) { return false; }
         _running = true;
         _thread = new Thread(Loop) { IsBackground = true, Name = "http" };
         _thread.Start();
+        return true;
+    }
+
+    /// <summary>是否在服务（端口绑定成功的实例才为真 —— Bind 全军覆没时为假）。</summary>
+    public bool Running => _running;
+
+    /// <summary>绑定端口（被占自动顺延）：先试 preferred；失败则从 47887 起的高位段
+    /// +1 找空位（最多 50 个）。全部被占则返回最后一个失败实例（Running=false，
+    /// 对齐旧行为：控制台没了，语音/按键不受影响）。
+    /// ★ 顺延刻意跳到高位段而不是 preferred+1：低位段撞车率高（47887 与默认 8787
+    ///   谐音好记，且 49152+ 是系统动态端口区，别人常年不驻守）。</summary>
+    public static HttpServer Bind(int preferred, string webRoot, string logPath, ConfigService config,
+                                  Func<JsonObject> stateBuilder,
+                                  Func<int, JsonObject>? eventsProvider = null,
+                                  KeysRole? keys = null)
+    {
+        HttpServer? last = null;
+        foreach (var p in new[] { preferred }.Concat(Enumerable.Range(47887, 50)))
+        {
+            var h = new HttpServer(p, webRoot, logPath, config, stateBuilder, eventsProvider, keys);
+            if (h.Start()) return h;
+            h.Stop();                       // 没起来也收干净（Stop 对未启动的 listener 是无害 try/catch）
+            last = h;
+        }
+        return last!;
     }
 
     public void Stop()
@@ -56,12 +85,7 @@ public sealed class HttpServer
 
     private void Loop()
     {
-        try { _listener.Start(); }
-        catch (Exception e)
-        {
-            Console.Error.WriteLine($"HTTP 启动失败（端口 {Port} 被占？）：{e.Message}");
-            return;
-        }
+        // listener 已在 Start() 里绑定 —— 这里只收连接（Stop() 会让 GetContext 抛出）
         while (_running)
         {
             HttpListenerContext ctx;

@@ -159,7 +159,7 @@ internal static class Program
         keys.Activity += voice.Poke;          // 遥控器按键活动 → 语音立刻重连
         voice.VoiceKeyEvent += down => keys.FireVirtual(0xFFFE, down);   // 语音键 → 虚拟 usage
 
-        var http = new HttpServer(port, Path.Combine(_baseDir, "web"), LogPath, config,
+        var http = HttpServer.Bind(port, Path.Combine(_baseDir, "web"), LogPath, config,
                                   () => new JsonObject
                                   {
                                       ["ok"] = true,
@@ -190,13 +190,20 @@ internal static class Program
                                   },
                                   EventsSince,
                                   keys);
+        // 端口顺延要广而告之：托盘提示/状态页虽显示实际地址，用户背的可能是配置号
+        if (http.Port != port)
+        {
+            Log("INFO", $"UI 端口 {port} 被占 —— 已顺延到高位端口 {http.Port}");
+            port = http.Port;      // stateBuilder 闭包按引用捕获，这里改完页面即报新号
+        }
+        else if (!http.Running)
+            Log("FATAL", $"UI 端口 {port} 与高位段 50 个候选全被占 —— 控制台不可用（语音/按键不受影响）");
         voice.VoiceKeyEnabled = config.Snapshot()["keys"]?["voice"] is null;
         keys.ReloadMapping();               // 启动即装载映射表（ConfigChanged 只覆盖后续变更）
         keys.ReloadProfile();               // 启动即装载报告指纹（同上）
         DeviceDb.RefreshAsync();            // 已知设备表后台刷新（内置兜底，失败静默）
         UpdateCheck.Start();                // 版本检查后台循环（结果进 /api/state.update）
-        http.Start();
-        voice.Start();
+        voice.Start();                      // HTTP 已随 Bind 启动
         keys.Start();
 
         using var tray = new TrayIcon(port);
@@ -230,6 +237,8 @@ internal static class Program
             // 两手都失败：不能裸退（等于杀掉用户的服务）—— 复活 HTTP 继续跑
             Log("INFO", "重启失败：新实例没拉起来，本实例继续服务");
             http.Start();
+            if (!http.Running)
+                Log("INFO", "复活旧实例的 HTTP 失败（端口被占？）—— 控制台暂不可用");
             tray.Toast("重启失败", "新实例没有拉起来，已恢复当前实例（日志有详情）");
         }
 
