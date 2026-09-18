@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Microsoft.Win32;
 
@@ -42,6 +43,67 @@ internal static class CableUninstall
 
     private static int _busy;
 
+    // ---- 卸载进度文件：主进程直卸（管理员）与提权子进程（--uninstall-cable）的
+    //      唯一进度通道 —— 子进程没法回话，v1 的 _uninstall_result.json 同款套路。
+    //      ProgramData 是双方都能算出的公共位置（对齐 DriverDir），不随 exe 换目录漂移。
+    private static readonly string StatePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+        "VibeMate", "vbcable", "uninstall_state.json");
+
+    /// <summary>单步进度：name + status(pending/running/done/warn/skip) + note。
+    /// 界面照着渲染成 ✓/△/⏳ 清单 —— 用户点名要逐步可见，别只给一行结论。</summary>
+    private sealed class StepState
+    {
+        public string Name = "", Status = "pending", Note = "";
+    }
+
+    /// <summary>写进度文件。写失败静默 —— 进度只是 UI 便利，绝不能拖垮卸载本身。</summary>
+    private static void WriteSteps(string phase, List<StepState> steps, string msg, bool reboot)
+    {
+        try
+        {
+            var arr = new JsonArray();
+            foreach (var s in steps)
+                arr.Add(new JsonObject { ["name"] = s.Name, ["status"] = s.Status, ["note"] = s.Note });
+            Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
+            File.WriteAllText(StatePath, new JsonObject
+            {
+                ["phase"] = phase,
+                ["steps"] = arr,
+                ["msg"] = msg,
+                ["reboot"] = reboot,
+                ["time"] = DateTimeOffset.Now.ToString("HH:mm:ss"),
+            }.ToJsonString(ConfigService.JsonOpts));
+        }
+        catch { }
+    }
+
+    /// <summary>进度快照（/api/state.cable.uninstall 数据源）。null = 无卸载可报。
+    /// 清理时机（只在非 running 时）：
+    ///   · 端点已消失（reboot=true 的场景 = 用户重启过）→ 提醒使命完成，删文件；
+    ///   · running 但 10 分钟没更新 → 子进程死了，丢弃（下次卸载会重写）。
+    /// 返回的 reboot=true 就是「重启提醒」的持久来源 —— 前端据此挂横幅直到端点消失。</summary>
+    internal static JsonObject? SnapshotUninstall()
+    {
+        try
+        {
+            if (!File.Exists(StatePath)) return null;
+            if (JsonNode.Parse(File.ReadAllText(StatePath)) is not JsonObject o) return null;
+            var phase = o["phase"]?.GetValue<string>() ?? "";
+            if (phase == "running")
+            {
+                if ((DateTime.UtcNow - File.GetLastWriteTimeUtc(StatePath)).TotalMinutes > 10)
+                { try { File.Delete(StatePath); } catch { } return null; }
+                return o;
+            }
+            // 到这一步安装缓存必是热的（stateBuilder 刚问过 Installed），不产生额外枚举
+            if (!CableSetup.Installed())
+            { try { File.Delete(StatePath); } catch { } return null; }
+            return o;
+        }
+        catch { return null; }
+    }
+
     /// <summary>卸载（要求管理员；普通权限由调用方 runas 拉自身 --uninstall-cable）。
     /// 并发防护对齐 InstallAsync：HTTP 重放 + 提权子进程不会同时进来。</summary>
     public static async Task<(bool Ok, string Msg)> UninstallAsync(Func<string, Task> log)
@@ -56,9 +118,28 @@ internal static class CableUninstall
     {
         var rebootAdvised = false;
 
+        // 步骤清单（与下方执行顺序一一对应；SetStep 即时落进度文件 → 界面清单）
+        var steps = new List<StepState>
+        {
+            new() { Name = "驱动包", Status = "running", Note = "pnputil 查找并删除" },
+            new() { Name = "服务键", Note = "VB-Cable / VBAudioVACMME" },
+            new() { Name = "注册表", Note = @"VB-Audio\Cable 等" },
+            new() { Name = "卸载项", Note = "「应用和功能」里的条目" },
+            new() { Name = "程序目录", Note = @"C:\Program Files\VB" },
+            new() { Name = "端点确认", Note = "CABLE Input 是否消失" },
+        };
+        void SetStep(int i, string status, string note)
+        {
+            steps[i].Status = status;
+            steps[i].Note = note;
+            WriteSteps("running", steps, "", rebootAdvised);
+        }
+        WriteSteps("running", steps, "", false);
+
         // ---- 1) 驱动包（root 设备节点随 /uninstall 移除）----
         var drivers = await EnumDriverPackagesAsync(log);
         var driverRemoved = drivers.Count == 0;          // 没找到 = 无此步可做，不算失败
+        var drvNote = drivers.Count == 0 ? "未找到（本机未走驱动包路安装）" : "";
         foreach (var name in drivers)                    // 发布名（oemNN.inf）排前：pnputil 只认它
         {
             var (rc, outText) = await RunAsync("pnputil",
@@ -72,13 +153,18 @@ internal static class CableUninstall
                 if (rc == 3010)
                 { await log($"驱动包 {name} 删除已受理 —— 需重启完成（pnputil 3010）"); rebootAdvised = true; }
                 else await log($"驱动包已删（{name}）");
+                drvNote = rc == 3010 ? $"{name} 已受理，需重启完成" : $"已删 {name}";
                 driverRemoved = true; break;
             }
             await log($"驱动包 {name} 删不掉（{Tail(outText)}），试另一个名字");
         }
         if (!driverRemoved) rebootAdvised = true;        // 包还挂在 DriverStore：重装前必须清掉
+        if (drvNote.Length == 0) drvNote = "删不掉（详见日志），重启后可清";
+        SetStep(0, driverRemoved ? (rebootAdvised ? "warn" : "done") : "warn", drvNote);
 
         // ---- 2) 服务键：先停再删 ----
+        SetStep(1, "running", "先停后删（防 1072 待删除影子）");
+        var svcDone = 0; var svcSkip = 0;
         foreach (var svc in SvcNames)
         {
             var keyPath = $@"{SvcRoot}\{svc}";
@@ -93,7 +179,7 @@ internal static class CableUninstall
                     continue;
                 }
                 var (allow, w) = GuardService(k, svc);
-                if (!allow) { await log($"跳过服务 {svc}：{w}"); continue; }
+                if (!allow) { await log($"跳过服务 {svc}：{w}"); svcSkip++; continue; }
                 why = w;
             }
             await RunAsync("sc", $"stop {svc}", 90_000);          // 没在跑时报 1062，无害
@@ -106,9 +192,12 @@ internal static class CableUninstall
                 catch (Exception e) { await log($"服务键 {svc} 直接删失败：{e.Message}"); }
             }
             await log($"服务键 {svc} 已删（{why}）");
+            svcDone++;
         }
+        SetStep(1, "done", svcSkip > 0 ? $"已删 {svcDone}、跳过 {svcSkip}（见日志）" : "已删 ×2");
 
         // ---- 3) 厂商键：只删 Cable 一支 ----
+        SetStep(2, "running", "只删 Cable 一支，Voicemeeter 不碰");
         try
         {
             string[] subs;
@@ -132,10 +221,13 @@ internal static class CableUninstall
             }
         }
         catch (Exception e) { await log($"厂商键清理异常（继续）：{e.Message}"); }
+        SetStep(2, "done", "已清理");
 
         // ---- 4) 「应用和功能」卸载项 ----
         // ★ 必须见到 vb-audio（Publisher=VB-Audio Software）才算数：DisplayName 里
         //   带 vbcable 字样的第三方条目完全可能存在，只看名字会删别人的卸载项
+        SetStep(3, "running", "校验厂商后删除");
+        var uninstDeleted = 0;
         try
         {
             string[] subs = Array.Empty<string>();
@@ -154,11 +246,15 @@ internal static class CableUninstall
                 if (!blob.Contains("vb-audio")) continue;
                 Registry.LocalMachine.DeleteSubKeyTree($@"{UninstRoot}\{sub}");
                 await log($"已删「应用和功能」卸载项：{sub}");
+                uninstDeleted++;
             }
         }
         catch (Exception e) { await log($"卸载项清理异常（继续）：{e.Message}"); }
+        SetStep(3, "done", uninstDeleted > 0 ? $"已删 {uninstDeleted} 条" : "无（静默安装不产生）");
 
         // ---- 5) 程序目录：只认官方那三个文件 ----
+        SetStep(4, "running", "仅当内容恰为官方三件");
+        var dirNote = "不存在";
         try
         {
             if (Directory.Exists(CableFilesDir))
@@ -169,9 +265,13 @@ internal static class CableUninstall
                 {
                     Directory.Delete(CableFilesDir, true);
                     await log($@"已删 {CableFilesDir}（里面恰好是官方那三个文件）");
+                    dirNote = "已删";
                 }
                 else if (files.Length > 0)
+                {
                     await log($"{CableFilesDir} 里有别的文件（{string.Join("、", files.Take(3))}），不动");
+                    dirNote = "内容非官方三件，未动";
+                }
             }
             if (Directory.Exists(ProgFilesDir)
                 && !Directory.EnumerateFileSystemEntries(ProgFilesDir).Any())
@@ -180,9 +280,11 @@ internal static class CableUninstall
                 await log(@"C:\Program Files\VB 已空，删掉");
             }
         }
-        catch (Exception e) { await log($"程序目录清理异常（继续）：{e.Message}"); }
+        catch (Exception e) { await log($"程序目录清理异常（继续）：{e.Message}"); dirNote = "清理异常（见日志）"; }
+        SetStep(4, "done", dirNote);
 
         // ---- 收尾：端点真消失了才算卸完（PnP 异步，对齐安装侧的轮询纪律）----
+        SetStep(5, "running", "轮询端点（最长 12s）");
         for (int i = 0; i < 12; i++)
         {
             CableSetup.Invalidate();
@@ -192,9 +294,12 @@ internal static class CableUninstall
         CableSetup.Invalidate();
         if (!CableSetup.Installed())
         {
+            steps[5].Status = "done";
+            steps[5].Note = "端点已消失";
             var msg = rebootAdvised
                 ? "已卸载 —— 建议重启一次系统（残留的待删除服务/驱动包重启后才彻底消失，也避免下次安装报错）"
                 : "已卸载";
+            WriteSteps("done", steps, msg, rebootAdvised);
             await log(msg);
             return (true, msg);
         }
@@ -203,11 +308,17 @@ internal static class CableUninstall
         // 「失败」字样疑惑（v2.1.4 实测踩坑）
         if (rebootAdvised && driverRemoved)
         {
+            steps[5].Status = "warn";
+            steps[5].Note = "仍在（内核驱动占用，重启后消失）";
             var accepted = "卸载已受理 —— 重启一次系统后设备端点消失、卸载彻底完成";
+            WriteSteps("done", steps, accepted, true);
             await log(accepted);
             return (true, accepted);
         }
         var fail = "没卸干净（端点仍在 —— 多半驱动被占用）：重启一次系统即可彻底移除";
+        steps[5].Status = "warn";
+        steps[5].Note = "仍在（见日志）";
+        WriteSteps("failed", steps, fail, rebootAdvised);
         await log(fail);
         return (false, fail);
     }

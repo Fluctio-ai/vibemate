@@ -273,6 +273,8 @@
       <button class="ghost" id="cable-install">检测并安装</button>
       <button class="ghost" id="cable-uninstall" style="display:none;color:var(--warn)">卸载</button>
       <span id="msg-cable" class="msg" role="status"></span>
+      <div id="cable-uninstall-box" style="display:none;margin-top:12px;padding:12px 14px;
+           border:1px solid var(--line);border-radius:8px;font-size:13px;line-height:1.9"></div>
     </div>
     <div class="card"><h3>链路状态</h3>
       <div class="row"><span class="k">状态</span><span id="v-state">—</span></div>
@@ -438,11 +440,34 @@ async function loadState() {
   $('s-voice').innerHTML = st(s.voice?.connected, s.voice?.note || '—');
   $('s-keys').innerHTML = st(s.keys?.ready, s.keys?.note || '—');
   const cabOk = !!s.cable?.installed;
-  const cabTxt = cabOk ? '已就绪' : '未检测到（自动安装中，或到「语音」页手动安装）';
-  $('s-cable').innerHTML = st(cabOk, cabTxt);
+  const un = s.cable?.uninstall;
+  const unRunning = un?.phase === 'running';
+  const unReboot = un?.phase === 'done' && un.reboot;
+  const cabTxt = unReboot ? '已卸载 —— 重启后生效'
+    : unRunning ? '卸载进行中…'
+    : cabOk ? '已就绪' : '未检测到（自动安装中，或到「语音」页手动安装）';
+  $('s-cable').innerHTML = `<i class="dot ${unReboot || unRunning ? 'warn' : (cabOk ? 'ok' : 'off')}"></i>${cabTxt}`;
   $('cable-state').innerHTML = st(cabOk, cabOk ? '已就绪' : '未安装');
   $('h-cable').innerHTML = st(cabOk, cabTxt);
   $('cable-uninstall').style.display = cabOk ? '' : 'none';   // 没装就没得卸
+  // 卸载期间双按钮都锁：装回和再卸都等这轮跑完
+  $('cable-install').disabled = unRunning;
+  $('cable-uninstall').disabled = unRunning;
+  // 卸载清单：✓ 完成 / △ 有话要说（待重启、跳过）/ ⏳ 进行中 / · 未到
+  const box = $('cable-uninstall-box');
+  if (un && un.phase && un.phase !== undefined) {
+    const ICON = { done:'✓', warn:'△', skip:'·', running:'⏳', pending:'·' };
+    const COL  = { done:'var(--ok)', warn:'var(--warn)', skip:'var(--mut)',
+                   running:'var(--acc)', pending:'var(--mut)' };
+    let html = `<div style="color:var(--fg-soft);margin-bottom:2px">卸载${un.phase === 'failed' ? '（有未完成项）' : ''} ${un.time || ''}</div>`;
+    html += (un.steps || []).map(k =>
+      `<div><span style="display:inline-block;width:1.4em;color:${COL[k.status] || 'var(--fg-soft)'}">${ICON[k.status] || '·'}</span>` +
+      `${k.name}${k.note ? ` <span style="color:var(--mut)">— ${k.note}</span>` : ''}</div>`).join('');
+    if (un.msg) html += `<div style="margin-top:6px;color:${un.phase === 'failed' ? 'var(--warn)' : 'var(--fg)'}">${un.phase === 'failed' ? '✗ ' : ''}${un.msg}</div>`;
+    if (unReboot) html += `<div style="margin-top:4px;color:var(--warn)">⚠ 请重启一次系统 —— 端点将在重启后消失，届时提醒自动解除</div>`;
+    box.innerHTML = html;
+    box.style.display = '';
+  } else box.style.display = 'none';
   $('keys-note').textContent = s.keys?.note || '';
   $('v-state').textContent = (s.voice?.connected ? '● ' : '○ ') + (s.voice?.note || '');
   if (!$('v-mode').dataset.loaded) {

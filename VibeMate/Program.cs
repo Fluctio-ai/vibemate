@@ -181,6 +181,9 @@ internal static class Program
                                       ["cable"] = new JsonObject
                                       {
                                           ["installed"] = CableSetup.Installed(),
+                                          // 卸载进度/重启提醒（null = 无卸载可报）——
+                                          // 主进程与提权子进程经 ProgramData 状态文件互通
+                                          ["uninstall"] = CableUninstall.SnapshotUninstall(),
                                       },
                                       ["update"] = UpdateCheck.Snapshot(),
                                       ["config"] = config.Snapshot(),
