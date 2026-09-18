@@ -59,8 +59,8 @@ if ($ok) {
     Write-Host "安装成功！版本 $ver" -ForegroundColor Green
     Write-Host ''
     Write-Host '· 右下角托盘出现 VibeMate 图标（闭眼呼吸 = 待机）'
-    Write-Host '· 左键点图标打开设置页：http://127.0.0.1:8787'
-    Write-Host '· 下一步：设置页选择你的遥控器（详见设置页的「安装帮助」）'
+    Write-Host '· 左键双击图标打开设置页：http://127.0.0.1:8787'
+    Write-Host '· 下一步：设置页选择你的遥控器（使用说明见设置页的「安装帮助」）'
     Write-Host '· 虚拟声卡 VB-CABLE 若未安装，程序会自动静默装（管理员权限下无需干预）'
 } else {
     Write-Host '服务没有响应 —— 请看本文件夹里的 vibe.log 排障（或重新运行本脚本）' -ForegroundColor Yellow
