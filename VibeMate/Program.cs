@@ -233,7 +233,16 @@ internal static class Program
             catch (Exception e) { Log("INFO", $"重启清理异常（继续）：{e.Message}"); }
             http.Stop();                       // 先放端口，新实例才绑得上
             await Task.Delay(600);
-            if (TrySpawnNewInstance()) { Application.Exit(); return; }
+            if (TrySpawnNewInstance())
+            {
+                // ★ 不走 Application.Exit 优雅退出：语音流正活跃时强拆 BLE，进程
+                //   退出期的 native 清理会等蓝牙栈，锁能挂十几秒 —— 新实例 15s
+                //   重试接不上就放弃（实测断链：旧实例日志打了「退出」却还占锁）。
+                //   清理已在上面做完，此处直接硬退（跳过 Main 收尾与终结器），
+                //   锁随进程即刻释放，新实例必能接棒。
+                tray.Dispose();                // 图标先摘，硬退后托盘不留残影
+                Environment.Exit(0);
+            }
             // 两手都失败：不能裸退（等于杀掉用户的服务）—— 复活 HTTP 继续跑
             Log("INFO", "重启失败：新实例没拉起来，本实例继续服务");
             http.Start();
