@@ -82,7 +82,12 @@ internal static class Program
             }
             if (!got)
             {
-                Log("INFO", "已有实例在跑，退出");
+                // Mutex 是权威判定：拿不到=真有实例；拿到但端口一直 bind 不上
+                // =第三方软件静态占了锁端口 —— 两种失败的处理一样（退出），但日志
+                // 必须分叉，否则「服务起不来」排障会被指向错误方向
+                Log("INFO", _portTaken
+                    ? $"单实例锁端口 {LockPort} 被其他程序占用 —— 不是已有实例；可 netstat 查占用者"
+                    : "已有实例在跑，退出");
                 return 0;
             }
         }
@@ -328,8 +333,12 @@ internal static class Program
     /// <summary>
     /// 单实例：Global Mutex（跨提权/会话可靠——实测端口锁挡不住管理员+普通双开）
     /// + 端口占位（抗僵尸，进程死=自然释放）。两者其一失败即退出。
+    /// ★ 失败归因要分清：Mutex 拿不到=真有实例；Mutex 拿到但端口 bind 失败
+    ///   =第三方静态占了锁端口（≠已有实例）—— 混为一谈会把「服务起不来」
+    ///   的排障日志指向错误方向。
     /// </summary>
     private static Mutex? _mutex;
+    private static bool _portTaken;   // 端口 bind 失败标记（最终日志分叉用）
     private static bool TakeSingletonLock()
     {
         _mutex = new Mutex(true, @"Global\VibeMateV2-Singleton", out var created);
@@ -342,6 +351,7 @@ internal static class Program
         }
         catch (SocketException)
         {
+            _portTaken = true;
             return false;
         }
     }

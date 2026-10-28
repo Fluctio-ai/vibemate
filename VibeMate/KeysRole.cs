@@ -945,11 +945,12 @@ public sealed class KeysRole : IDisposable
                     if (!st.WaitingSecond) return;   // 按住期的重复报告沿：忽略
                     // 双击窗口内的第二按：取消窗口定时器；有 long 重启长按定时器
                     // （「第二下按住不放」仍触发长按 —— 双击与长按共存的关键）。
-                    // ★ 旧长按定时器必须 Dispose 再重建：状态对象是复用的，旧回调到点
+                    // ★ 旧长按定时器必须杀掉重建：状态对象是复用的，旧回调到点
                     //   引用检查照样通过 —— 不杀会把第一按的残留误判成第二按的长按
-                    st.DoubleTimer?.Dispose(); st.DoubleTimer = null;
-                    st.LongTimer?.Dispose(); st.LongTimer = null;
+                    Kill(ref st.DoubleTimer); Kill(ref st.LongTimer);
                     st.WaitingSecond = false; st.SecondPress = true;
+                    // 常规路径下是死写（第二按松开走 SecondPress 分支先返回），仅供
+                    // 热更缝隙兜底：double 映射中途被删时快放分支还能读到合理时间
                     st.PressedAt = Environment.TickCount64;
                     if (hasLong)
                         st.LongTimer = new System.Threading.Timer(
@@ -1009,9 +1010,8 @@ public sealed class KeysRole : IDisposable
                         // 第一按快放：开 300ms 双击窗口，单击推迟到窗口超时补发。
                         // ★ 长按判定随第一按的松开结束 —— LongTimer 不杀，到点会把
                         //   窗口期误判成长按（LongTick 的引用检查防不住：状态是同一对象）
-                        st.LongTimer?.Dispose(); st.LongTimer = null;
-                        st.Repeat?.Dispose(); st.Repeat = null;
-                        st.Guard?.Dispose(); st.Guard = null;   // 已松开：看门狗卸任
+                        Kill(ref st.LongTimer); Kill(ref st.Repeat);
+                        Kill(ref st.Guard);                    // 已松开：看门狗卸任
                         st.WaitingSecond = true;
                         st.DoubleTimer = new System.Threading.Timer(
                             DoubleTick, (usage, st), DoubleClickMs, Timeout.Infinite);
@@ -1047,8 +1047,7 @@ public sealed class KeysRole : IDisposable
             JsonObject? run = null;
             lock (_sync)
             {
-                // 状态不是我调度时的那个对象 = 键已松开/重置 —— 回调作废
-                if (!_states.TryGetValue(usage, out var cur) || !ReferenceEquals(cur, st)) return;
+                if (!IsLive(usage, st)) return;   // 键已松开/重置 —— 回调作废
                 st.LongActive = true; st.LongTimer = null;
                 run = _map.GetValueOrDefault(usage)?["long"] as JsonObject;
             }
@@ -1062,8 +1061,7 @@ public sealed class KeysRole : IDisposable
             JsonObject? run = null;
             lock (_sync)
             {
-                if (!_states.TryGetValue(usage, out var cur) || !ReferenceEquals(cur, st)) return;
-                if (!st.WaitingSecond) return;
+                if (!IsLive(usage, st) || !st.WaitingSecond) return;
                 _states.Remove(usage);
                 st.DoubleTimer = null;
                 run = _map.GetValueOrDefault(usage);
@@ -1079,7 +1077,7 @@ public sealed class KeysRole : IDisposable
             var fired = false;
             lock (_sync)
             {
-                if (!_states.TryGetValue(usage, out var cur) || !ReferenceEquals(cur, st)) return;
+                if (!IsLive(usage, st)) return;
                 RemoveState(usage, st);
                 fired = true;
                 var m = _map.GetValueOrDefault(usage);
@@ -1096,15 +1094,27 @@ public sealed class KeysRole : IDisposable
         private void RemoveState(ushort usage, PressState st)
         {
             _states.Remove(usage);
-            st.LongTimer?.Dispose(); st.DoubleTimer?.Dispose();
-            st.Repeat?.Dispose(); st.Guard?.Dispose();
-            st.LongTimer = st.DoubleTimer = st.Repeat = st.Guard = null;
+            Kill(ref st.LongTimer); Kill(ref st.DoubleTimer);
+            Kill(ref st.Repeat); Kill(ref st.Guard);
         }
+
+        /// <summary>停掉并清空一个定时器（锁内调用）。样板收敛一处 ——
+        /// 手写「Dispose + 置 null」漏掉置 null 会骗过引用验活。</summary>
+        private static void Kill(ref System.Threading.Timer? t)
+        {
+            t?.Dispose();
+            t = null;
+        }
+
+        /// <summary>定时器回调验活：状态仍注册且是我调度时的那个对象
+        /// （锁内调用）。对象被换血/重置 = 回调作废。</summary>
+        private bool IsLive(ushort usage, PressState st) =>
+            _states.TryGetValue(usage, out var cur) && ReferenceEquals(cur, st);
 
         /// <summary>重启看门狗（仅锁内调用）。</summary>
         private void RestartGuard(ushort usage, PressState st)
         {
-            st.Guard?.Dispose();
+            Kill(ref st.Guard);
             st.Guard = new System.Threading.Timer(
                 GuardTick, (usage, st), MaxHoldMs, Timeout.Infinite);
         }
@@ -1180,8 +1190,8 @@ public sealed class KeysRole : IDisposable
             if (host is null) return;
             lock (_sync)
             {
-                if (!_states.TryGetValue(usage, out var cur) || !ReferenceEquals(cur, host)) return;
-                host.Repeat?.Dispose();
+                if (!IsLive(usage, host)) return;
+                Kill(ref host.Repeat);
                 host.Repeat = new System.Threading.Timer(_ => act(), null, ms, ms);
             }
         }

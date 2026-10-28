@@ -221,19 +221,17 @@
           <option value="holdmouse">按住鼠标（滚轮=连续滚）</option>
           <option value="text">文本（输入一段文字）</option>
         </select>
-        <div id="m-single-box">
-          <label for="m-value">动作（可手选，或点「捕获」后按一下键盘 / 滚一下滚轮 / 点一下鼠标）</label>
-          <div class="toolbar" style="margin:0 0 6px">
-            <button class="ghost" id="cap-btn">捕获输入</button>
-            <span id="cap-msg" class="msg warn"></span>
-          </div>
-          <select id="m-value"></select>
-          <div id="m-mods-label">修饰键（组合键用，可多选；点 chip 开关）</div>
-          <div class="chips" id="m-mods" role="group" aria-labelledby="m-mods-label"></div>
-          <div id="m-text-row" style="display:none">
-            <label for="m-text">文本内容</label>
-            <input id="m-text" placeholder="/exit 之类的命令">
-          </div>
+        <label for="m-value" id="m-value-label">动作（可手选，或点「捕获」后按一下键盘 / 滚一下滚轮 / 点一下鼠标）</label>
+        <div class="toolbar" style="margin:0 0 6px" id="m-cap-bar">
+          <button class="ghost" id="cap-btn">捕获输入</button>
+          <span id="cap-msg" class="msg warn"></span>
+        </div>
+        <select id="m-value"></select>
+        <div id="m-mods-label">修饰键（组合键用，可多选；点 chip 开关）</div>
+        <div class="chips" id="m-mods" role="group" aria-labelledby="m-mods-label"></div>
+        <div id="m-text-row" style="display:none">
+          <label for="m-text">文本内容</label>
+          <input id="m-text" placeholder="/exit 之类的命令">
         </div>
         <div id="m-seq-box" style="display:none">
           <div style="font-size:12px;color:var(--mut);margin:10px 0 4px">步骤（从上到下依次执行，步间隔 50ms）</div>
@@ -611,6 +609,17 @@ function loadSettingsExtras() {
 const TYPE_LABEL = { key:'单键', combo:'组合键', seq:'宏', hold:'按住', holdcombo:'按住组合',
                      mouse:'鼠标', holdmouse:'按住鼠标', text:'文本' };
 let _lastKeysJson = '';
+let _lastDevSig = '';   // 设备指示行/学习卡状态的签名（renderKeys 防抖用）
+
+// 动作对象 → 人读标签，全页唯一出处（映射表 pill/预览/步骤行 desc 共用）：
+// seq 递归展开（→ 连接）、text 截 maxLen 字、其余 mods+value 拼装
+function actionDesc(s, maxLen = 12) {
+  if (!s) return '';
+  if (s.type === 'seq')
+    return (s.steps || []).map(x => actionDesc(x, maxLen)).join(' → ') || '（空宏）';
+  if (s.type === 'text') return `「${(s.text || '（未填）').slice(0, maxLen)}」`;
+  return [...(s.mods || []), s.value].filter(Boolean).join('+') || '（未选）';
+}
 
 // 用户手动展开过「其他遥控器」卡 → 本会话不再自动收起（自动收起只针对「没看清
 // 点了展开」的意外，不能跟用户的手对着干）
@@ -624,41 +633,34 @@ $('devlearn-toggle').onclick = () => {
 
 function renderKeys(force) {
   const keys = (CFG && CFG.keys) || {};
-  // 配键前先让人看见「在配哪台」—— 不用切去设置页核对（在 keys-json 短路之前：
-  // 换设备不改映射时这行也要刷新）
+  // 配键前先让人看见「在配哪台」（在 keys-json 短路之前：换设备不改映射也要刷新）。
+  // 同款「无变化不碰 DOM」纪律：设备行/学习卡状态拼签名，变了才写
   const addr = CFG?.remote_addr || '';
-  $('keys-dev').innerHTML = addr
-    ? `设备 <b style="color:var(--fg-soft)">${addr.slice(-8).toUpperCase()}</b>` +
-      ` · <a style="color:var(--acc);cursor:pointer;text-decoration:none" id="keys-dev-change">更换</a>`
-    : `<a style="color:var(--warn);cursor:pointer;text-decoration:none" id="keys-dev-change">未选遥控器 · 去设置选择 →</a>`;
-  $('keys-dev-change').onclick = () =>
-    document.querySelector('nav a[data-p="settings"]').click();
-  // 当前设备已识别（有学习/预填指纹）→ 设备学习卡收起成一行标题
   const devKnown = !!(CFG?.devices?.[CFG?.remote_addr]?.report);
   const collapsed = devKnown && !devLearning && !devLearnPinned;
-  $('devlearn-body').style.display = collapsed ? 'none' : '';
-  $('devlearn-toggle').textContent = collapsed ? '展开' : '收起';
+  const sig = `${addr}|${collapsed}`;
+  if (sig !== _lastDevSig) {
+    _lastDevSig = sig;
+    $('keys-dev').innerHTML = addr
+      ? `设备 <b style="color:var(--fg-soft)">${addr.slice(-8).toUpperCase()}</b>` +
+        ` · <a style="color:var(--acc);cursor:pointer;text-decoration:none" id="keys-dev-change">更换</a>`
+      : `<a style="color:var(--warn);cursor:pointer;text-decoration:none" id="keys-dev-change">未选遥控器 · 去设置选择 →</a>`;
+    $('keys-dev-change').onclick = () =>
+      document.querySelector('nav a[data-p="settings"]').click();
+    // 当前设备已识别（有学习/预填指纹）→ 设备学习卡收起成一行标题
+    $('devlearn-body').style.display = collapsed ? 'none' : '';
+    $('devlearn-toggle').textContent = collapsed ? '展开' : '收起';
+  }
   const j = JSON.stringify(keys);
   if (!force && j === _lastKeysJson) return;      // 无变化不重绘（防闪防抢点击）
   _lastKeysJson = j;
   const tb = $('keys-table').querySelector('tbody');
-  tb.innerHTML = Object.entries(keys).map(([name, m]) => {
-    const target = m.type === 'seq'
-      ? (m.steps || []).map(seqStepDesc).join(' → ')
-      : m.type === 'text' ? `「${(m.text||'').slice(0,20)}」`
-      : m.type.includes('mouse') ? m.value
-      : [...(m.mods||[]), m.value].join('+');
-    const stepDesc = s => s.type === 'seq'
-      ? (s.steps || []).map(seqStepDesc).join(' → ')
-      : s.type === 'text' ? `「${(s.text||'').slice(0,12)}」`
-      : [...(s.mods||[]), s.value].join('+');
-    const longT = m.long ? ` 长按→${stepDesc(m.long)}` : '';
-    const dblT = m.double ? ` 双击→${stepDesc(m.double)}` : '';
-    return `<tr><td>${name}</td><td>${TYPE_LABEL[m.type]||m.type}</td>
-      <td><span class="pill">${target}</span>${m.long ? `<span class="pill">${longT}</span>` : ''}${m.double ? `<span class="pill">${dblT}</span>` : ''}</td>
+  tb.innerHTML = Object.entries(keys).map(([name, m]) =>
+    `<tr><td>${name}</td><td>${TYPE_LABEL[m.type]||m.type}</td>
+      <td><span class="pill">${actionDesc(m, 20)}</span>${m.long ? `<span class="pill"> 长按→${actionDesc(m.long, 12)}</span>` : ''}${m.double ? `<span class="pill"> 双击→${actionDesc(m.double, 12)}</span>` : ''}</td>
       <td><button class="ghost" data-edit="${name}">编辑</button>
-          <button class="ghost" data-del="${name}">删除</button></td></tr>`;
-  }).join('') || '<tr><td colspan=4 style="color:var(--mut)">还没有映射 —— 用下面的学习模式加</td></tr>';
+          <button class="ghost" data-del="${name}">删除</button></td></tr>`
+  ).join('') || '<tr><td colspan=4 style="color:var(--mut)">还没有映射 —— 用下面的学习模式加</td></tr>';
   tb.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
     const m = CFG?.keys?.[b.dataset.edit];
     if (!m) return;
@@ -783,6 +785,19 @@ async function pollEvents() {
 }
 // 表单预填：existing 有值=覆盖编辑态；无值=新键干净态；usageHex = 裸 usage 直入
 // （设备学习的 confirmed 键走这条，不依赖按键名反查）
+// fillSubForm：一处动作子表单（长按/双击同构，id 约定见 syncTypeForm）的回填
+function fillSubForm(pfx, sub, enableId, boxId) {
+  $(enableId).checked = !!sub;
+  $(boxId).style.display = sub ? 'block' : 'none';
+  $(pfx + '-seq-steps').innerHTML = '';
+  if (!sub) return;
+  $(pfx + '-type').value = sub.type in TYPE_LABEL ? sub.type : 'key';
+  $(pfx + '-type').onchange();
+  ensureOption($(pfx + '-value'), sub.value);
+  setMods(pfx + '-mods', sub.mods);
+  $(pfx + '-text').value = sub.text || '';
+  (sub.steps || []).forEach(s => seqAddStep(s, pfx + '-seq-steps'));
+}
 function fillLearnForm(name, existing, usageHex) {
   {
     $('learn-usage').textContent = usageHex || existing?.usage || nameToUsage(name) || '';
@@ -792,39 +807,11 @@ function fillLearnForm(name, existing, usageHex) {
         $('learn-hint').textContent = `「${name}」当前为 ${existing.type} ${existing.value || existing.text || ''} —— 改好后保存即覆盖`;
         $('m-type').value = existing.type in TYPE_LABEL ? existing.type : 'key';
         $('m-type').onchange();      // 填选项 + 按类型显隐文本框（下同）
-        if (existing.value && ![...$('m-value').options].some(o => o.value === existing.value))
-          $('m-value').add(new Option(existing.value, existing.value));
-        $('m-value').value = existing.value || '';
+        ensureOption($('m-value'), existing.value);
         setMods('m-mods', existing.mods);
         $('m-text').value = existing.text || '';
-        const lg = existing.long;
-        $('m-long-enable').checked = !!lg;
-        $('m-long-box').style.display = lg ? 'block' : 'none';
-        $('m-long-seq-steps').innerHTML = '';
-        if (lg) {
-          $('m-long-type').value = lg.type in TYPE_LABEL ? lg.type : 'key';
-          $('m-long-type').onchange();
-          if (lg.value && ![...$('m-long-value').options].some(o => o.value === lg.value))
-            $('m-long-value').add(new Option(lg.value, lg.value));
-          $('m-long-value').value = lg.value || '';
-          setMods('m-long-mods', lg.mods);
-          $('m-long-text').value = lg.text || '';
-          (lg.steps || []).forEach(s => seqAddStep(s, 'm-long-seq-steps'));
-        }
-        const db = existing.double;
-        $('m-dbl-enable').checked = !!db;
-        $('m-dbl-box').style.display = db ? 'block' : 'none';
-        $('m-dbl-seq-steps').innerHTML = '';
-        if (db) {
-          $('m-dbl-type').value = db.type in TYPE_LABEL ? db.type : 'key';
-          $('m-dbl-type').onchange();
-          if (db.value && ![...$('m-dbl-value').options].some(o => o.value === db.value))
-            $('m-dbl-value').add(new Option(db.value, db.value));
-          $('m-dbl-value').value = db.value || '';
-          setMods('m-dbl-mods', db.mods);
-          $('m-dbl-text').value = db.text || '';
-          (db.steps || []).forEach(s => seqAddStep(s, 'm-dbl-seq-steps'));
-        }
+        fillSubForm('m-long', existing.long, 'm-long-enable', 'm-long-box');
+        fillSubForm('m-dbl', existing.double, 'm-dbl-enable', 'm-dbl-box');
         // 序列回填：按已存步骤逐行重建（onchange 已切到步骤区）
         $('m-seq-steps').innerHTML = '';
         (existing.steps || []).forEach(s => seqAddStep(s, 'm-seq-steps'));
@@ -841,58 +828,42 @@ function fillLearnForm(name, existing, usageHex) {
     updatePreview();
   }
 }
-function fillValueOptions() {
-  const t = $('m-type').value;
-  if (t.includes('mouse')) fill($('m-value'), MICE);
-  else fillKeys($('m-value'));
-}
 // 文本框只在 text 类型露脸：主流程（单键/组合键/鼠标）少两行永久噪音，
 // 三处表单（主/长按/双击）同一规则
 const syncTextRow = (typeId, rowId) =>
   $(rowId).style.display = $(typeId).value === 'text' ? '' : 'none';
-$('m-type').onchange = () => {
-  fillValueOptions();
-  syncTextRow('m-type', 'm-text-row');
-  // 序列类型：单动作区让位给步骤列表
-  const isSeq = $('m-type').value === 'seq';
-  $('m-single-box').style.display = isSeq ? 'none' : '';
-  $('m-seq-box').style.display = isSeq ? '' : 'none';
-};
+// 「补缺失 Option 再选中」惯用收敛（捕获/回填多处共用）：值不在选项里就补一项。
+// 空值不碰 select —— 保持默认第一项（新步骤行的合理默认，显式置 '' 会变成无选中）
+function ensureOption(sel, v) {
+  if (!v) return;
+  if (![...sel.options].some(o => o.value === v)) sel.add(new Option(v, v));
+  sel.value = v;
+}
+// 类型切换统一处理：填选项 + text 行显隐 + 宏时单值区让位给步骤列表。
+// 三处表单 id 同构（{pfx}-type/-value/-value-label/-cap-bar/-mods/-mods-label/
+// -text/-text-row/-seq-box），一份逻辑三处复用 —— 加新手势或新控件只改这里
+function syncTypeForm(pfx) {
+  const t = $(pfx + '-type').value;
+  if (t.includes('mouse')) fill($(pfx + '-value'), MICE);
+  else fillKeys($(pfx + '-value'));
+  syncTextRow(pfx + '-type', pfx + '-text-row');
+  const isSeq = t === 'seq';
+  [pfx + '-value-label', pfx + '-cap-bar', pfx + '-value', pfx + '-mods-label', pfx + '-mods']
+    .forEach(id => $(id).style.display = isSeq ? 'none' : '');
+  $(pfx + '-seq-box').style.display = isSeq ? '' : 'none';
+}
+$('m-type').onchange = () => syncTypeForm('m');
 fillChips($('m-long-mods'), MODS);
 fillKeys($('m-long-value'));
-$('m-long-type').onchange = () => {
-  const t = $('m-long-type').value;
-  if (t.includes('mouse')) fill($('m-long-value'), MICE);
-  else fillKeys($('m-long-value'));
-  syncTextRow('m-long-type', 'm-long-text-row');
-  // 宏：单值行让位给步骤列表
-  const isSeq = t === 'seq';
-  ['m-long-value-label', 'm-long-cap-bar', 'm-long-value', 'm-long-mods-label', 'm-long-mods']
-    .forEach(id => $(id).style.display = isSeq ? 'none' : '');
-  $('m-long-seq-box').style.display = isSeq ? '' : 'none';
-};
+$('m-long-type').onchange = () => syncTypeForm('m-long');
 fillChips($('m-dbl-mods'), MODS);
 fillKeys($('m-dbl-value'));
-$('m-dbl-type').onchange = () => {
-  const t = $('m-dbl-type').value;
-  if (t.includes('mouse')) fill($('m-dbl-value'), MICE);
-  else fillKeys($('m-dbl-value'));
-  syncTextRow('m-dbl-type', 'm-dbl-text-row');
-  const isSeq = t === 'seq';
-  ['m-dbl-value-label', 'm-dbl-cap-bar', 'm-dbl-value', 'm-dbl-mods-label', 'm-dbl-mods']
-    .forEach(id => $(id).style.display = isSeq ? 'none' : '');
-  $('m-dbl-seq-box').style.display = isSeq ? '' : 'none';
-};
+$('m-dbl-type').onchange = () => syncTypeForm('m-dbl');
 
 // ---- 序列步骤行：类型 + 值/文本 + 捕获 + 删。捕获自动判型（带修饰键=combo、
 // 纯键=key、滚轮/鼠标=mouse）并连修饰键一起写入 —— 序列步骤本就该「按什么捕
 // 什么」，手选路径不给修饰键入口（要 Ctrl+A 就点捕获按一下），UI 保持一行轻 ----
 const SEQ_TYPE_LABEL = { combo:'组合键', key:'单键', mouse:'鼠标', text:'文本' };
-function seqStepDesc(s) {
-  return !s ? '（空）'
-    : s.type === 'text' ? `「${s.text || '（未填）'}」`
-    : [...(s.mods || []), s.value].filter(Boolean).join('+') || '（未选）';
-}
 function seqRenumber(wrapId) {
   [...$(wrapId).children].forEach((r, i) =>
     r.firstChild.textContent = (i + 1) + '.');
@@ -918,8 +889,7 @@ function seqAddStep(step, wrapId) {
   del.style.cssText = 'padding:5px 12px;font-size:12px';
 
   const sync = () => {
-    desc.textContent = seqStepDesc(row._step);
-    seqRenumber(wrapId);
+    desc.textContent = actionDesc(row._step);
     updatePreview();
   };
   const renderVal = () => {
@@ -935,12 +905,11 @@ function seqAddStep(step, wrapId) {
     } else {
       const sel = document.createElement('select');
       sel.style.maxWidth = '200px';
-      sel.innerHTML = type.value === 'mouse'
-        ? MICE.map(m => `<option>${m}</option>`).join('') : keyOptionsHtml(KEY_GROUPS);
-      if (row._step.value && ![...sel.options].some(o => o.value === row._step.value))
-        sel.add(new Option(row._step.value, row._step.value));
-      if (!row._step.value) row._step.value = sel.value;
-      sel.value = row._step.value;
+      // 选项来源与主表单同源（fill/fillKeys），不自己拼 —— 键表加组时这里不漂移
+      if (type.value === 'mouse') fill(sel, MICE);
+      else fillKeys(sel);
+      ensureOption(sel, row._step.value);
+      row._step.value = sel.value;
       sel.onchange = () => { row._step.value = sel.value; sync(); };
       valWrap.appendChild(sel);
     }
@@ -962,6 +931,7 @@ function seqAddStep(step, wrapId) {
   del.onclick = () => { row.remove(); seqRenumber(wrapId); updatePreview(); };
   row.append(idx, type, valWrap, cap, desc, del);
   $(wrapId).appendChild(row);
+  idx.textContent = $(wrapId).children.length + '.';   // 只追加到末尾：直接定序号
   if (step) { row._step = { mods: [], ...step }; type.value = step.type; }
   renderVal();
 }
@@ -997,14 +967,14 @@ function updatePreview() {
   const isSeq = $('m-type').value === 'seq';
   const seqs = isSeq ? seqSteps('m-seq-steps') : [];
   let html = isSeq
-    ? `宏（${seqs.length} 步）：<b>${seqs.map(seqStepDesc).join(' → ') || '（还没配步骤）'}</b>`
+    ? `宏（${seqs.length} 步）：<b>${seqs.map(s => actionDesc(s)).join(' → ') || '（还没配步骤）'}</b>`
     : `将发送：<b>${comboLabel($('m-type').value, $('m-value').value, checkedMods('m-mods'), $('m-text').value)}</b>`;
   // 长按/双击预览：宏类型展开步骤串，其余走单值拼装
   const subDesc = (pfx, enableId) => {
     if (!$(enableId).checked) return '';
     const t = $(pfx + '-type').value;
     const body = t === 'seq'
-      ? (seqSteps(pfx + '-seq-steps').map(seqStepDesc).join(' → ') || '（空宏）')
+      ? (seqSteps(pfx + '-seq-steps').map(s => actionDesc(s)).join(' → ') || '（空宏）')
       : comboLabel(t, $(pfx + '-value').value, checkedMods(pfx + '-mods'), $(pfx + '-text').value);
     return `<b>${body}</b>`;
   };
@@ -1037,38 +1007,26 @@ $('m-dbl-text').addEventListener('input', updatePreview);
 ['v-mode','v-key'].forEach(id => $(id).addEventListener('change', updateVoicePreview));
 $('m-long-enable').onchange = () => $('m-long-box').style.display = $('m-long-enable').checked ? 'block' : 'none';
 $('m-dbl-enable').onchange = () => $('m-dbl-box').style.display = $('m-dbl-enable').checked ? 'block' : 'none';
-bindCapture($('m-long-cap'), $('m-long-cap-msg'),
-  (key, mods) => {
-    if (mods.length) $('m-long-type').value = 'combo'; else if ($('m-long-type').value === 'combo') $('m-long-type').value = 'key';
-    $('m-long-type').onchange();
-    if (![...$('m-long-value').options].some(o => o.value === key))
-      $('m-long-value').add(new Option(key, key));
-    $('m-long-value').value = key;
-    setMods('m-long-mods', mods);
-    updatePreview();
-  },
-  (action) => {
-    $('m-long-type').value = action.startsWith('wheel') ? 'holdmouse' : 'mouse';
-    $('m-long-type').onchange();
-    $('m-long-value').value = action;
-    updatePreview();
-  });
-bindCapture($('m-dbl-cap'), $('m-dbl-cap-msg'),
-  (key, mods) => {
-    if (mods.length) $('m-dbl-type').value = 'combo'; else if ($('m-dbl-type').value === 'combo') $('m-dbl-type').value = 'key';
-    $('m-dbl-type').onchange();
-    if (![...$('m-dbl-value').options].some(o => o.value === key))
-      $('m-dbl-value').add(new Option(key, key));
-    $('m-dbl-value').value = key;
-    setMods('m-dbl-mods', mods);
-    updatePreview();
-  },
-  (action) => {
-    $('m-dbl-type').value = action.startsWith('wheel') ? 'holdmouse' : 'mouse';
-    $('m-dbl-type').onchange();
-    $('m-dbl-value').value = action;
-    updatePreview();
-  });
+// 长/双捕获绑定同构（id 约定 {pfx}-cap/-cap-msg/-type/-value/-mods），一份两用
+function bindSubCapture(pfx) {
+  bindCapture($(pfx + '-cap'), $(pfx + '-cap-msg'),
+    (key, mods) => {
+      if (mods.length) $(pfx + '-type').value = 'combo';
+      else if ($(pfx + '-type').value === 'combo') $(pfx + '-type').value = 'key';
+      $(pfx + '-type').onchange();
+      ensureOption($(pfx + '-value'), key);
+      setMods(pfx + '-mods', mods);
+      updatePreview();
+    },
+    (action) => {
+      $(pfx + '-type').value = action.startsWith('wheel') ? 'holdmouse' : 'mouse';
+      $(pfx + '-type').onchange();
+      $(pfx + '-value').value = action;
+      updatePreview();
+    });
+}
+bindSubCapture('m-long');
+bindSubCapture('m-dbl');
 
 // ---- 动作捕获（前端事件版，对齐 v1 的「按键捕获」：键盘/滚轮/鼠标）----
 const CODE2KEY = { ArrowUp:'UP', ArrowDown:'DOWN', ArrowLeft:'LEFT', ArrowRight:'RIGHT',
@@ -1165,16 +1123,14 @@ function bindCapture(btn, msgEl, onKey, onMouse, pureMods = false) {
 bindCapture($('cap-btn'), $('cap-msg'),
   (key, mods) => {                       // 学习表单：键 → 类型+值+修饰键
     $('m-type').value = mods.length ? 'combo' : 'key';
-    fillValueOptions();
-    if (![...$('m-value').options].some(o => o.value === key))
-      $('m-value').add(new Option(key, key));
-    $('m-value').value = key;
+    $('m-type').onchange();              // 路径归一：填选项+显隐全走统一 onchange
+    ensureOption($('m-value'), key);
     setMods('m-mods', mods);
     updatePreview();
   },
   (action) => {                          // 鼠标/滚轮
     $('m-type').value = action.startsWith('wheel') ? 'holdmouse' : 'mouse';
-    fillValueOptions();
+    $('m-type').onchange();
     $('m-value').value = action;
     updatePreview();
   });
@@ -1182,16 +1138,10 @@ bindCapture($('cap-btn'), $('cap-msg'),
 $('learn-save').onclick = async () => {
   const usage = $('learn-usage').textContent.replace(/^0x/i, '');
   const keyName = ($('m-keyname').value.trim() || 'key_' + usage).slice(0, 30);
-  const m = { type: $('m-type').value, value: $('m-value').value,
-              mods: checkedMods('m-mods'),
-              text: $('m-text').value, usage: '0x' + usage.toLowerCase() };
-  if (m.type === 'seq') {
-    // 序列：value/mods/text 让位给 steps（空步已滤；一个有效步都没有不让存）
-    const steps = seqSteps('m-seq-steps');
-    if (!steps.length) { $('msg-keys').textContent = '宏至少要一步有效动作（捕获或手选）'; return; }
-    delete m.value; delete m.mods; delete m.text;
-    m.steps = steps;
-  }
+  // 主表单 id 恰合 seqOrSingle 的 {pfx}-* 约定（m-type/m-value/…）—— 三处收集同一引擎
+  const base = seqOrSingle('m');
+  if (!base) return;                          // 空宏已弹提示，中止保存
+  const m = { ...base, usage: '0x' + usage.toLowerCase() };
   if ($('m-long-enable').checked) {
     const lo = seqOrSingle('m-long');
     if (!lo) return;                          // 空宏已弹提示，中止保存
