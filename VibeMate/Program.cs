@@ -7,7 +7,11 @@ namespace VibeMate;
 
 internal static class Program
 {
-    private const int LockPort = 49741;          // 单实例锁（对齐 v1：只在 127.0.0.1）
+    // 单实例锁端口（对齐 v1：只在 127.0.0.1）。★ 必须避开 ephemeral 动态段
+    // （本机 49152-65535）：v1 沿用的 49741 恰在段内 —— 别家软件外连的本地端口
+    // 残留（CLOSE_WAIT）撞上它就 bind 失败，新实例误判「已有实例在跑」起不来
+    // （2026-10-28 实测：Foxmail 占了 49741，服务停机）
+    private const int LockPort = 44741;
     private static string _baseDir = AppContext.BaseDirectory;
     private static readonly string LogPath = Path.Combine(_baseDir, "vibe.log");
 

@@ -102,12 +102,15 @@ internal static class DeviceDb
         });
     }
 
-    /// <summary>按 VID/PID + 蓝牙名查表。★三者缺一不可：小米普通版与 RC003 共用
-    /// 2717:32b8，仅 VID/PID 无法区分型号 —— 条目 names（忽略大小写、包含即中）
-    /// 须命中 name 才认定；names 缺失 → 跳过该条目（继续找同 VID/PID 的其他
-    /// 条目）。命中返回 {vid,pid,brand,model,voice,report,keys} 的拷贝；
-    /// 未命中 null（调用方引导学习模式）。</summary>
-    public static JsonObject? Lookup(string? vid, string? pid, string? name)
+    /// <summary>按 VID/PID + 蓝牙名（+ 可选硬件 rev）查表。★VID/PID/名三者缺一不可：
+    /// 小米普通版与 RC003 共用 2717:32b8，仅 VID/PID 无法区分型号 —— 条目 names
+    /// （忽略大小写、包含即中）须命中 name 才认定；names 缺失 → 跳过该条目（继续找
+    /// 同 VID/PID 的其他条目）。条目带 revs 且调用方 rev 非空 → rev 也须命中
+    /// （BTHLEDevice 节点名 _REV&amp; 段，同型号不同硬件版本的区分依据，如 Google
+    /// 0110/011b、RC003 00a4）；调用方 rev 空 → 不查 rev（宽容退化为名称认定）。
+    /// 命中返回 {vid,pid,brand,model,voice,report,keys} 的拷贝；未命中 null
+    /// （调用方引导学习模式）。</summary>
+    public static JsonObject? Lookup(string? vid, string? pid, string? name, string? rev = null)
     {
         if (string.IsNullOrWhiteSpace(vid) || string.IsNullOrWhiteSpace(pid)
             || string.IsNullOrWhiteSpace(name)) return null;   // name 空则任何条目都不可能命中
@@ -124,6 +127,11 @@ internal static class DeviceDb
             if (patterns is null || patterns.Count == 0
                 || !patterns.Any(p =>
                     name.Contains(p?.GetValue<string>() ?? "", StringComparison.OrdinalIgnoreCase)))
+                continue;
+            if (d["revs"] is JsonArray revs && revs.Count > 0
+                && !string.IsNullOrWhiteSpace(rev)
+                && !revs.Any(r =>
+                    string.Equals(r?.GetValue<string>(), rev, StringComparison.OrdinalIgnoreCase)))
                 continue;
             return (JsonObject)d.DeepClone();
         }

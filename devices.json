@@ -1,10 +1,11 @@
 {
-  "version": 2,
-  "_comment": "VibeMate 已知遥控器指纹库。keys 是预填的键名标签（usage→名字），未收录设备走界面学习模式逐键学习；语音能力=ATVV 运行时探测，不依赖本表。新设备欢迎 PR 补充（学习页可导出指纹）。RC003 报文数据来源：axonkey docs/WINDOWS_RC003_EXTRA_KEYS.md 2026-09-09 真机实测。★型号认定 vid+pid+names 三者缺一不可（小米普通版与 RC003 共用 2717:32b8，靠蓝牙名区分），names 匹配语义见 DeviceDb.Lookup。",
+  "version": 3,
+  "_comment": "VibeMate 已知遥控器指纹库。keys 是预填的键名标签（usage→名字），未收录设备走界面学习模式逐键学习；语音能力=ATVV 运行时探测，不依赖本表。新设备欢迎 PR 补充（学习页可导出指纹）。RC003 报文数据来源：axonkey docs/WINDOWS_RC003_EXTRA_KEYS.md 2026-09-09 真机实测。★型号认定 vid+pid+names 三者缺一不可（小米普通版与 RC003 共用 2717:32b8，靠蓝牙名区分），names 匹配语义见 DeviceDb.Lookup；RC003 蓝牙名为真机实测三形态（与 windows-remote-mic-app device_profile.py 对齐）—— 旧表写 rc003/2 pro 两个子串，MI RC 与小米蓝牙语音遥控器两种真机名都不中。revs=BTHLEDevice 节点名 _REV& 段的已知硬件版本（同型号不同 rev 各列一个，如 Google 0110/011b；条目带 revs 且调用方 rev 非空时须命中，语义见 DeviceDb.Lookup）。",
   "devices": [
     {
       "vid": "18d1",
       "pid": "9450",
+      "revs": ["0110", "011b"],
       "brand": "Google",
       "model": "Chromecast Voice Remote",
       "voice": "atvv",
@@ -30,10 +31,11 @@
     {
       "vid": "2717",
       "pid": "32b8",
+      "revs": ["00a4"],
       "brand": "Xiaomi",
       "model": "小米蓝牙遥控器2 Pro (RC003)",
       "voice": "atvv",
-      "names": ["rc003", "2 pro"],
+      "names": ["mi rc", "xiaomi bluetooth remote 2 pro", "小米蓝牙语音遥控器"],
       "report": { "len": 9, "id": 1, "off": 3, "w": 1 },
       "keys": {
         "0xF1": "back",

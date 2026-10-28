@@ -67,16 +67,19 @@ public sealed class KeysRole : IDisposable
         return tail.Length == 12 && tail.All(char.IsLetterOrDigit) ? tail.ToUpperInvariant() : null;
     }
 
-    /// <summary>节点名里的 VID/PID（结构化解析；VID 带 2 位总线前缀 0218D1 → 18D1）。
-    /// 比裸 Contains 子串匹配严谨 —— MAC/序列号碰巧含 "18d1""9450" 不会误中。</summary>
+    /// <summary>节点名里的 VID/PID/REV（结构化解析；VID 带 2 位总线前缀 0218D1 → 18D1）。
+    /// 比裸 Contains 子串匹配严谨 —— MAC/序列号碰巧含 "18d1""9450" 不会误中。
+    /// REV = 硬件版本（节点名 _REV&amp; 段，如 Google 0110/011b、RC003 00a4），
+    /// 同型号不同版本的区分依据 —— DeviceDb 的 revs 匹配与排障展示都靠它；
+    /// 老节点名缺 REV 段时 Rev=""。</summary>
     private static readonly System.Text.RegularExpressions.Regex VidPidRe = new(
-        @"VID&\d{2}([0-9A-Fa-f]{4})_PID&([0-9A-Fa-f]{4})",
+        @"VID&\d{2}([0-9A-Fa-f]{4})_PID&([0-9A-Fa-f]{4})(?:_REV&([0-9A-Fa-f]{4}))?",
         System.Text.RegularExpressions.RegexOptions.Compiled);
 
-    internal static (string Vid, string Pid)? BthleVidPidOf(string nodeName)
+    internal static (string Vid, string Pid, string Rev)? BthleVidPidOf(string nodeName)
     {
         var m = VidPidRe.Match(nodeName);
-        return m.Success ? (m.Groups[1].Value, m.Groups[2].Value) : null;
+        return m.Success ? (m.Groups[1].Value, m.Groups[2].Value, m.Groups[3].Value) : null;
     }
 
     public volatile bool Ready;
@@ -97,6 +100,8 @@ public sealed class KeysRole : IDisposable
         _getAddr = getAddr;
         _getDevice = getDevice;
         _mapper.OnExecute = () => MappedFire?.Invoke();
+        _mapper.OnGuard = u => _ = _log(
+            $"按键：看门狗强制收尾 {UsageName(u)}（10s 无松开报告 —— 空闲帧丢失？）");
     }
 
     public void Start()
@@ -844,22 +849,43 @@ public sealed class KeysRole : IDisposable
         }
     }
 
-    // ================= 映射执行器（v1 Player 语义 + v2 长短按双映射）=================
+    // ================= 映射执行器（v1 Player 语义 + v2 长短按 + 双击状态机）=================
     //
-    // 长短按判定（tap.dll 同时上报按下/空闲帧，间隔可测）：
-    //   · 映射带可选 "long" 子对象时启用：按下后 0.4s 内松开 = 短按（发主配置）；
-    //     按住 ≥0.4s = 长按（发 long 配置：hold 类持续、key 类每 0.3s 连发
-    //     —— 「长按返回一直删除」就是 long={type:key,value:BACKSPACE}）；
-    //   · 不带 long 子对象 → 行为与 v1 完全一致（key 立即发、hold 按住保持）。
+    // 手势模型（2026-10-28 引入双击；状态机思路借鉴 windows-remote-mic-app 的
+    // button_gesture.py：双击窗口 300ms 对齐其 0.300s；长按阈值保持 v2 的 400ms
+    // 不动 —— 存量用户手感不变）：
+    //   · 映射带 "double" 子对象 → 启用双击：第一按松开不立即发单击，开 300ms
+    //     窗口；窗口内第二按松开 = 双击（发 double 配置）；窗口超时 = 补发单击。
+    //     配了双击的键单击必然延迟 300ms —— 手势识别的必要取舍，不是故障；
+    //   · 映射带 "long" 子对象 → 按住 ≥0.4s 发 long 配置（hold 类持续、key 类
+    //     每 40ms 连发 —— 「长按返回一直删除」）；double 与 long 可共存：第二按
+    //     会重启长按定时器（「第二下按住不放」仍触发长按）；
+    //   · 都不带 → 按下立即执行（v1 行为不变：hold 类保持、滚轮按住连续滚照旧）；
+    //   · 延迟触发的动作（窗口超时补发的单击、第二按松开触发的双击、带 long 键
+    //     松开补发的短按）物理键都已松开：hold 类一律退化为点按（down+up 即放）、
+    //     滚轮不挂连发 —— 否则 KeyDown 无人抬起 = 卡键（v2 时代 hold+long 的
+    //     短按就有这个潜伏洞，一并修掉）；
+    //   · 看门狗：进状态机的键挂 10s 定时器，到点未松开 = 空闲帧丢了/报告卡死 →
+    //     强制收尾（只抬起、不触发任何动作 —— 对齐参考项目 MAX_HOLD，它的
+    //     「Alt键锁死」bug 单就是丢释放帧的下场）；
+    //   · 线程纪律：按键事件全在管道读线程，定时器回调在线程池 —— 状态转移全在
+    //     _sync 锁内、SendInput 全在锁外；定时器回调进锁先验「状态还是我调度时
+    //     的那个对象」（引用比较），松开与超时赛跑时单击/双击不会都发（v2 的
+    //     LongTimer 回调与 Release 无锁竞态一并修掉）。
     private sealed class Mapper
     {
-        private const int LongPressMs = 400;
-        private const int RepeatMs = 40;     // 长按连发间隔（2026-09-16 从 200 调整：
-                                             // Windows 键盘自动重复标准 ≈30次/s(33ms)，
-                                             // 200ms 只有 1/6，长按连删明显迟钝）
+        private const int LongPressMs = 400;      // 长按阈值（v2 存量行为不动）
+        private const int DoubleClickMs = 300;    // 双击窗口（对齐参考项目 0.300s）
+        private const int RepeatMs = 40;          // 长按连发间隔（2026-09-16 从 200 调整：
+                                                  // Windows 键盘自动重复标准 ≈30次/s(33ms)，
+                                                  // 200ms 只有 1/6，长按连删明显迟钝）
+        private const int MaxHoldMs = 10000;      // 卡键看门狗（对齐参考项目 MAX_HOLD）
+        private const int SeqStepGapMs = 50;      // 序列步骤间隔：应用/输入法消化上一步
+                                                  // 需要时间，零间隔 Ctrl+A→Delete 偶发漏
 
         private Dictionary<ushort, JsonObject> _map = new();
         private readonly Dictionary<ushort, PressState> _states = new();
+        private readonly object _sync = new();
 
         private sealed class PressState
         {
@@ -867,10 +893,17 @@ public sealed class KeysRole : IDisposable
             public System.Threading.Timer? LongTimer;
             public bool LongActive;
             public System.Threading.Timer? Repeat;
+            public System.Threading.Timer? DoubleTimer;
+            public bool WaitingSecond;   // 第一按已松开，300ms 窗口内等第二按
+            public bool SecondPress;     // 窗口内第二按已按下
+            public bool Immediate;       // 无 long/double：按下时已立即执行（Release 只管抬起）
+            public System.Threading.Timer? Guard;
         }
 
         /// <summary>映射命中回调（KeysRole.MappedFire 的转接：内部类不好碰外层事件）。</summary>
         internal Action? OnExecute;
+        /// <summary>看门狗强制收尾（usage 出参 —— KeysRole 记排障日志用）。</summary>
+        internal Action<ushort>? OnGuard;
 
         public void NoteStats(long total) { }
 
@@ -900,52 +933,184 @@ public sealed class KeysRole : IDisposable
         /// <summary>遥控器按下。</summary>
         public void Fire(ushort usage)
         {
-            if (!_map.TryGetValue(usage, out var m)) return;
-            var longMap = m["long"] as JsonObject;
-            if (longMap is null)
+            JsonObject? run = null;
+            PressState? runHost = null;
+            lock (_sync)
             {
-                Execute(usage, m, single: true);
-                return;
+                if (!_map.TryGetValue(usage, out var m)) return;
+                var hasLong = m["long"] is JsonObject;
+                var hasDouble = m["double"] is JsonObject;
+                if (_states.TryGetValue(usage, out var st))
+                {
+                    if (!st.WaitingSecond) return;   // 按住期的重复报告沿：忽略
+                    // 双击窗口内的第二按：取消窗口定时器；有 long 重启长按定时器
+                    // （「第二下按住不放」仍触发长按 —— 双击与长按共存的关键）。
+                    // ★ 旧长按定时器必须 Dispose 再重建：状态对象是复用的，旧回调到点
+                    //   引用检查照样通过 —— 不杀会把第一按的残留误判成第二按的长按
+                    st.DoubleTimer?.Dispose(); st.DoubleTimer = null;
+                    st.LongTimer?.Dispose(); st.LongTimer = null;
+                    st.WaitingSecond = false; st.SecondPress = true;
+                    st.PressedAt = Environment.TickCount64;
+                    if (hasLong)
+                        st.LongTimer = new System.Threading.Timer(
+                            LongTick, (usage, st), LongPressMs, Timeout.Infinite);
+                    RestartGuard(usage, st);
+                    return;
+                }
+                var stNew = new PressState { PressedAt = Environment.TickCount64 };
+                _states[usage] = stNew;
+                RestartGuard(usage, stNew);
+                if (!hasLong && !hasDouble)
+                {
+                    // v1 行为：按下立即执行；状态仍建 —— hold 抬起/滚轮连发/看门狗
+                    // 统一走状态机（此前滚轮连发挂在「恰好存在的状态」上：无 long 的键
+                    // 根本没状态，「按住连续滚」静默失效，一并修掉）
+                    stNew.Immediate = true;
+                    run = m; runHost = stNew;
+                }
+                else if (hasLong)
+                {
+                    stNew.LongTimer = new System.Threading.Timer(
+                        LongTick, (usage, stNew), LongPressMs, Timeout.Infinite);
+                }
             }
-            // 有长按映射：延迟判定（0.4s 内松=短按；到点仍按=长按启动）
-            var st = new PressState { PressedAt = Environment.TickCount64 };
-            _states[usage] = st;
-            st.LongTimer = new System.Threading.Timer(_ =>
-            {
-                st.LongActive = true;
-                st.LongTimer = null;
-                Execute(usage, longMap, single: false);
-            }, null, LongPressMs, Timeout.Infinite);
+            if (run is not null) Execute(usage, run, single: true, delayed: false, runHost);
         }
 
         /// <summary>遥控器松开（空闲帧=全部松开，逐键调这里）。</summary>
         public void Release(ushort usage)
         {
-            var st = _states.Remove(usage, out var s) ? s : null;
-            if (st is null)
+            JsonObject? run = null; JsonObject? lift = null;
+            lock (_sync)
             {
-                // v1 兼容路径（无 long 映射）：抬起 hold 的
-                Lift(usage, _map.GetValueOrDefault(usage));
-                return;
+                if (!_states.TryGetValue(usage, out var st))
+                    lift = _map.GetValueOrDefault(usage);   // 无状态兜底（热更缝隙）：抬起 hold
+                else if (st.WaitingSecond) { /* 窗口期的重复空闲帧：忽略 */ }
+                else
+                {
+                    var m = _map.GetValueOrDefault(usage);
+                    if (st.Immediate)
+                    {
+                        RemoveState(usage, st);
+                        lift = m;                            // 抬起 hold 类
+                    }
+                    else if (st.LongActive)
+                    {
+                        RemoveState(usage, st);
+                        lift = m?["long"] as JsonObject;     // 结束长按
+                    }
+                    else if (st.SecondPress)
+                    {
+                        RemoveState(usage, st);
+                        run = m?["double"] as JsonObject;    // 第二按松开 = 双击
+                    }
+                    else if (m?["double"] is not null)
+                    {
+                        // 第一按快放：开 300ms 双击窗口，单击推迟到窗口超时补发。
+                        // ★ 长按判定随第一按的松开结束 —— LongTimer 不杀，到点会把
+                        //   窗口期误判成长按（LongTick 的引用检查防不住：状态是同一对象）
+                        st.LongTimer?.Dispose(); st.LongTimer = null;
+                        st.Repeat?.Dispose(); st.Repeat = null;
+                        st.Guard?.Dispose(); st.Guard = null;   // 已松开：看门狗卸任
+                        st.WaitingSecond = true;
+                        st.DoubleTimer = new System.Threading.Timer(
+                            DoubleTick, (usage, st), DoubleClickMs, Timeout.Infinite);
+                    }
+                    else
+                    {
+                        // 带 long 的快放：补发短按（v2 行为）
+                        RemoveState(usage, st);
+                        if (Environment.TickCount64 - st.PressedAt < LongPressMs)
+                            run = m;
+                    }
+                }
             }
-            st.LongTimer?.Dispose();
-            st.Repeat?.Dispose();
-            if (st.LongActive)
-                Lift(usage, _map[usage]["long"]!.AsObject());       // 结束长按
-            else if (Environment.TickCount64 - st.PressedAt < LongPressMs)
-                Execute(usage, _map[usage], single: true);           // 短按
+            // 锁外执行（SendInput 不进锁 —— 定时器回调不陪按键沿排队）
+            if (lift is not null) Lift(lift);
+            if (run is not null) Execute(usage, run, single: true, delayed: true, null);
         }
 
         public void ReleaseAll()
         {
-            foreach (var usage in _states.Keys.ToList())
+            List<ushort> active, mapped;
+            lock (_sync) { active = _states.Keys.ToList(); mapped = _map.Keys.ToList(); }
+            foreach (var usage in active)
                 Release(usage);
-            foreach (var usage in _map.Keys.ToList())
-                Lift(usage, _map[usage]);
+            foreach (var usage in mapped)
+                Lift(_map.GetValueOrDefault(usage));     // 兜底抬起（幂等：没按下的键 KeyUp 无害）
         }
 
-        // ---- 动作执行 ----
-        private void Execute(ushort usage, JsonObject m, bool single)
+        /// <summary>长按到点（仍在按住）→ 触发 long 配置。</summary>
+        private void LongTick(object? o)
+        {
+            var (usage, st) = ((ushort, PressState))o!;
+            JsonObject? run = null;
+            lock (_sync)
+            {
+                // 状态不是我调度时的那个对象 = 键已松开/重置 —— 回调作废
+                if (!_states.TryGetValue(usage, out var cur) || !ReferenceEquals(cur, st)) return;
+                st.LongActive = true; st.LongTimer = null;
+                run = _map.GetValueOrDefault(usage)?["long"] as JsonObject;
+            }
+            if (run is not null) Execute(usage, run, single: false, delayed: false, st);
+        }
+
+        /// <summary>双击窗口超时（没有第二按）→ 补发单击。</summary>
+        private void DoubleTick(object? o)
+        {
+            var (usage, st) = ((ushort, PressState))o!;
+            JsonObject? run = null;
+            lock (_sync)
+            {
+                if (!_states.TryGetValue(usage, out var cur) || !ReferenceEquals(cur, st)) return;
+                if (!st.WaitingSecond) return;
+                _states.Remove(usage);
+                st.DoubleTimer = null;
+                run = _map.GetValueOrDefault(usage);
+            }
+            if (run is not null) Execute(usage, run, single: true, delayed: true, null);
+        }
+
+        /// <summary>10s 未松开：空闲帧丢了/报告卡死 → 强制收尾（只抬起不触发动作）。</summary>
+        private void GuardTick(object? o)
+        {
+            var (usage, st) = ((ushort, PressState))o!;
+            JsonObject? lift = null;
+            var fired = false;
+            lock (_sync)
+            {
+                if (!_states.TryGetValue(usage, out var cur) || !ReferenceEquals(cur, st)) return;
+                RemoveState(usage, st);
+                fired = true;
+                var m = _map.GetValueOrDefault(usage);
+                // 只抬「已经按下去」的：Immediate=主配置在按住；LongActive=long 在按住；
+                // 还在判定窗口里的从未执行过任何动作，无需抬起
+                if (st.LongActive) lift = m?["long"] as JsonObject;
+                else if (st.Immediate) lift = m;
+            }
+            if (fired) OnGuard?.Invoke(usage);
+            if (lift is not null) Lift(lift);
+        }
+
+        /// <summary>移除状态并停掉它挂的所有定时器（仅锁内调用）。</summary>
+        private void RemoveState(ushort usage, PressState st)
+        {
+            _states.Remove(usage);
+            st.LongTimer?.Dispose(); st.DoubleTimer?.Dispose();
+            st.Repeat?.Dispose(); st.Guard?.Dispose();
+            st.LongTimer = st.DoubleTimer = st.Repeat = st.Guard = null;
+        }
+
+        /// <summary>重启看门狗（仅锁内调用）。</summary>
+        private void RestartGuard(ushort usage, PressState st)
+        {
+            st.Guard?.Dispose();
+            st.Guard = new System.Threading.Timer(
+                GuardTick, (usage, st), MaxHoldMs, Timeout.Infinite);
+        }
+
+        // ---- 动作执行（锁外调用；delayed=物理键已松开的延迟触发 —— 按住类全部点按化）----
+        private void Execute(ushort usage, JsonObject m, bool single, bool delayed, PressState? host)
         {
             OnExecute?.Invoke();                        // 托盘按键动效
             var type = m["type"]?.GetValue<string>() ?? "";
@@ -955,24 +1120,50 @@ public sealed class KeysRole : IDisposable
 
             switch (type)
             {
+                case "seq" when m["steps"] is JsonArray steps:
+                    // 序列宏（2026-10-28）：一个遥控器键按序执行多步 —— 如
+                    // Ctrl+A 全选 → Delete → 输入 abc。步骤形状=现有动作对象，
+                    // 只收瞬时类（key/combo/mouse/text）：hold 类没有抬起时机
+                    // （放进序列=KeyDown 无人抬起=卡键）、seq 不嵌套（一层够用）。
+                    // 同步 Sleep 占用管道读线程数十 ms —— 期间新报告进缓冲不丢，
+                    // 量级无害（TypeText 本身就同款同步逐字符）。
+                    var first = true;
+                    foreach (var s in steps.OfType<JsonObject>())
+                    {
+                        if (s["type"]?.GetValue<string>() is not ("key" or "combo" or "mouse" or "text"))
+                            continue;
+                        if (!first) Thread.Sleep(SeqStepGapMs);
+                        Execute(usage, s, single: true, delayed: delayed, null);
+                        first = false;
+                    }
+                    break;
                 case "key" or "combo" when KeysInput.VkOf(value) is { } vk:
                     KeysInput.Combo(mods, vk);
                     if (!single)                       // 长按 key 类：连发（删除场景）
-                        StartRepeat(usage, () => KeysInput.Combo(mods, vk));
+                        StartRepeat(usage, host, () => KeysInput.Combo(mods, vk));
                     break;
                 case "hold" or "holdcombo" when KeysInput.VkOf(value) is { } vk2:
-                    KeysInput.KeyDown2(mods, vk2);      // 按下保持（Lift 负责抬起）
+                    if (delayed)                       // 物理键已松开：保持无意义 → 点按化
+                        KeysInput.Combo(mods, vk2);
+                    else
+                        KeysInput.KeyDown2(mods, vk2);      // 按下保持（Lift 负责抬起）
                     break;
                 case "mouse":
                     KeysInput.Mouse(value);
                     if (!single)
-                        StartRepeat(usage, () => KeysInput.Mouse(value));
+                        StartRepeat(usage, host, () => KeysInput.Mouse(value));
                     break;
                 case "holdmouse":
                     if (value is "wheel_up" or "wheel_down")
                     {
                         KeysInput.Mouse(value);
-                        StartRepeat(usage, () => KeysInput.Mouse(value), 60);
+                        if (!delayed)                  // 按住连续滚；延迟触发只点一下
+                            StartRepeat(usage, host, () => KeysInput.Mouse(value), 60);
+                    }
+                    else if (delayed)
+                    {
+                        KeysInput.Mouse(value);         // 点按化：按下即抬
+                        KeysInput.Mouse(value + "_up");
                     }
                     else
                         KeysInput.Mouse(value);         // 按住类鼠标键（Lift 发 *_up）
@@ -983,24 +1174,23 @@ public sealed class KeysRole : IDisposable
             }
         }
 
-        private void StartRepeat(ushort usage, Action act, int ms = RepeatMs)
+        /// <summary>连发定时器挂到状态上（锁内验活：状态已死说明键已松开，不挂）。</summary>
+        private void StartRepeat(ushort usage, PressState? host, Action act, int ms = RepeatMs)
         {
-            if (_states.TryGetValue(usage, out var st))
+            if (host is null) return;
+            lock (_sync)
             {
-                st.Repeat?.Dispose();
-                st.Repeat = new System.Threading.Timer(_ => act(), null, ms, ms);
+                if (!_states.TryGetValue(usage, out var cur) || !ReferenceEquals(cur, host)) return;
+                host.Repeat?.Dispose();
+                host.Repeat = new System.Threading.Timer(_ => act(), null, ms, ms);
             }
         }
 
-        /// <summary>抬起/停止：hold 类键、按住类鼠标、连发定时器。</summary>
-        private void Lift(ushort usage, JsonObject? m)
+        /// <summary>抬起/停止：hold 类键、按住类鼠标键（连发定时器的 Dispose
+        /// 归 RemoveState/Release 管，这里不再碰 _states；没按下的键 KeyUp 幂等无害）。</summary>
+        private void Lift(JsonObject? m)
         {
             if (m is null) return;
-            if (_states.TryGetValue(usage, out var st))
-            {
-                st.Repeat?.Dispose();
-                st.Repeat = null;
-            }
             var type = m["type"]?.GetValue<string>() ?? "";
             var value = m["value"]?.GetValue<string>() ?? "";
             if (type is "hold" or "holdcombo" && KeysInput.VkOf(value) is { } vk)

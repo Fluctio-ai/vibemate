@@ -510,10 +510,12 @@ public sealed class HttpServer
                         {
                             item["vid"] = vp.Vid;
                             item["pid"] = vp.Pid;
+                            if (vp.Rev.Length > 0)
+                                item["rev"] = vp.Rev;      // 硬件版本（排障/版本区分可见）
                             // 已知设备：vid+pid+蓝牙名三重认定（普通版与 Pro 共用
-                            // VID/PID，名称不中不算）→ 预填型号 + 语音能力
-                            // （免学习的便利层；未命中走学习）
-                            if (DeviceDb.Lookup(vp.Vid, vp.Pid, name) is { } known)
+                            // VID/PID，名称不中不算；条目带 revs 时 rev 也须命中）
+                            // → 预填型号 + 语音能力（免学习的便利层；未命中走学习）
+                            if (DeviceDb.Lookup(vp.Vid, vp.Pid, name, vp.Rev) is { } known)
                             {
                                 item["model"] = known["model"]?.GetValue<string>();
                                 item["voice"] = known["voice"]?.GetValue<string>();
