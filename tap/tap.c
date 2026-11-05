@@ -123,10 +123,14 @@ static volatile LONG g_gatt_on;          /* 主程序下发：启用 GATT 合成
 static volatile LONG g_gatt_ready;       /* hook 已安装 */
 static volatile LONG g_gatt_last = -1;   /* 上次转发的 usage（-1=未发过） */
 static volatile ULONGLONG g_gatt_mac;    /* 选中设备地址（低 48 位） */
+static volatile LONG g_gmap = 1;         /* 1=Google 厂商码→标准 usage；0=通用 0xFFxx */
 
-/* code → usage（上游远端码表，2026-11 真机验证 03/04/05/06/0a/0b/00） */
+/* code → usage。gmap=1 用上游 Google 码表（2026-11 真机验证 03/04/05/06/0a/0b/00）；
+ * gmap=0（未知厂商）把码本身编成 0xFFxx 伪 usage，学习模式可直接学到并映射。 */
 static USHORT gatt_code_usage(int code)
 {
+    if (code <= 0 || code > 0xFF) return 0;
+    if (!g_gmap) return (USHORT)(0xFF00 | code);
     switch (code) {
     case 0x01: return 0x019E;   /* power */
     case 0x03: return 0x0042;   /* up */
@@ -260,7 +264,8 @@ static void __attribute__((fastcall)) detour_report(void *self, void *addr, void
                     }
                 } else if (n == 2) {
                     USHORT u = (USHORT)(data[0] | (data[1] << 8));
-                    if (u == 0 || gatt_usage_known(u)) {
+                    /* 通用设备（gmap=0）不按已知 usage 过滤 —— 学习模式要看到全部 */
+                    if (u == 0 || !g_gmap || gatt_usage_known(u)) {
                         gatt_forward(u);
                         InterlockedIncrement(&g_gatt_fwd);
                     }
@@ -537,7 +542,7 @@ static DWORD WINAPI pipe_thread(LPVOID unused)
     g_pipe_ok = 1;
     /* 协议握手：主程序据此识别 DLL 版本。WUDFHost 常驻 —— 主程序部署新版后
        连到的可能还是旧版驻留 DLL（管道名不变），靠这行发现并升级重注入。 */
-    send_line("tap 5\n");
+    send_line("tap 6\n");
     send_hb();
 
     char rbuf[512];
@@ -578,6 +583,10 @@ static DWORD WINAPI pipe_thread(LPVOID unused)
                         InterlockedExchange(&g_gatt_on, on);
                         if (on) gatt_install();
                         logf("[gatt] mode=%ld\n", on);
+                    }
+                    else if (!strncmp(line, "gmap ", 5)) {
+                        InterlockedExchange(&g_gmap, line[5] == '1');
+                        logf("[gatt] gmap=%ld\n", (long)g_gmap);
                     }
                     else if (!strcmp(line, "ping"))
                         send_hb();

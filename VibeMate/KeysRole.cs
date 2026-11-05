@@ -108,6 +108,55 @@ public sealed class KeysRole : IDisposable
         return "";
     }
 
+    /// <summary>按 MAC 读 VID/PID（BTHLEDevice 节点名；取不到 null）。</summary>
+    internal static (string Vid, string Pid)? VidPidOfMac(string mac12)
+    {
+        try
+        {
+            using var root = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Enum\BTHLEDevice");
+            if (root is null) return null;
+            foreach (var node in root.GetSubKeyNames())
+                if (BthleMacOf(node) == mac12 && BthleVidPidOf(node) is { } vp)
+                    return (vp.Vid, vp.Pid);
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>推送型设备判定：该 MAC 的 HID 集合里没有任何 kbdhid/mouhid 读者
+    /// （如 Google rev 0110）→ 按键报告不会走 HID 读 IOCTL，必须走 GATT 桥接。
+    /// 找不到 HID 节点时退回 rev 白名单（老设备兼容路径不受影响）。</summary>
+    internal static bool IsPushTypeDevice(string mac12)
+    {
+        try
+        {
+            using var hid = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Enum\HID");
+            if (hid is not null)
+            {
+                var found = false;
+                foreach (var node in hid.GetSubKeyNames())
+                {
+                    if (!node.Contains(mac12, StringComparison.OrdinalIgnoreCase)) continue;
+                    using var nk = hid.OpenSubKey(node);
+                    foreach (var instName in nk?.GetSubKeyNames() ?? [])
+                    {
+                        found = true;
+                        using var inst = nk!.OpenSubKey(instName);
+                        if (inst?.GetValue("Service") is string svc
+                            && (svc.Equals("kbdhid", StringComparison.OrdinalIgnoreCase)
+                                || svc.Equals("mouhid", StringComparison.OrdinalIgnoreCase)))
+                            return false;
+                    }
+                }
+                if (found) return true;
+            }
+        }
+        catch { }
+        return RevOfMac(mac12) is "0110";
+    }
+
     public volatile bool Ready;
     public volatile string Note = "未启动";
     /// <summary>按键事件（学习模式监听用）：usage + 按下/松开。</summary>
@@ -205,7 +254,7 @@ public sealed class KeysRole : IDisposable
         //   可能还是旧版驻留 DLL（管道名不变；旧协议不认识 filter/block 偏移与
         //   mac/gatt 指令，学习模式/推送型按键收不到报告）。握手不符 = 卸旧注新。
         var hello = await ReadHello(pipe, ct);
-        if (hello != "tap 5")
+        if (hello != "tap 6")
         {
             await _log($"按键：DLL 协议握手不符（{hello ?? "(无)"}）—— 卸载旧版并升级注入");
             try
@@ -220,7 +269,7 @@ public sealed class KeysRole : IDisposable
             pipe = await InjectAndConnect("tap.dll 升级");
             if (pipe is null) return;
             hello = await ReadHello(pipe, ct);
-            if (hello != "tap 5")
+            if (hello != "tap 6")
             {
                 Note = "tap.dll 协议握手失败";
                 await _log($"按键：升级后握手仍不符（{hello ?? "(无)"}）");
@@ -242,14 +291,23 @@ public sealed class KeysRole : IDisposable
         await WritePipeAsync(pipe, FilterBytes());
         await SendBlockAsync(pipe);
 
-        // 推送型设备（rev 0110）：通知 DLL 启用 GATT 合成，并下发选中设备地址
-        // （DLL 用它在驱动回调里过滤其他遥控器）。其他 rev 一律 gatt 0，零影响。
+        // 推送型设备（HID 集合里没有键盘/鼠标读者，如 rev 0110）：通知 DLL 启用
+        // GATT 桥接并下发选中设备地址；gmap 决定厂商码用哪套码表（Google 标准
+        // usage / 通用 0xFFxx 伪 usage，后者可被学习模式直接学到）。
         var mac12 = Mac12(_getAddr());
         if (mac12.Length == 12)
         {
+            var gatt = IsPushTypeDevice(mac12);
+            var vp = VidPidOfMac(mac12);
+            var gmap = vp is { } v
+                && string.Equals(v.Vid, "18d1", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(v.Pid, "9450", StringComparison.OrdinalIgnoreCase);
             await WritePipeAsync(pipe, Encoding.ASCII.GetBytes($"mac {mac12}\n"));
-            var gatt = RevOfMac(mac12) is "0110";
             await WritePipeAsync(pipe, Encoding.ASCII.GetBytes($"gatt {(gatt ? 1 : 0)}\n"));
+            await WritePipeAsync(pipe, Encoding.ASCII.GetBytes($"gmap {(gmap ? 1 : 0)}\n"));
+            if (gatt)
+                await _log("按键：推送型设备（无 HID 读者）—— 启用 GATT 桥接"
+                           + (gmap ? "，Google 码表" : "，通用厂商码（可学习）"));
         }
 
         // 2) 报文循环
