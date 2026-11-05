@@ -54,6 +54,15 @@ public sealed class KeysRole : IDisposable
     public void ReloadProfile() =>
         Profile = ReportProfile.FromConfig(_getDevice()) ?? ReportProfile.Google;
 
+    /// <summary>选中设备变更：断开当前会话，主循环下一轮按新地址重解析宿主重连。
+    /// 不主动踢的话，已连着的旧设备会话会一直挂着，切设备要重启应用才生效。</summary>
+    public void KickSession()
+    {
+        NamedPipeClientStream? p;
+        lock (_learnLock) p = _pipe;
+        try { p?.Dispose(); } catch { /* 会话已结束 */ }
+    }
+
     /// <summary>蓝牙地址归一化：去分隔符 → 12 位大写 hex（KeysRole/HttpServer/Program 共用）。</summary>
     internal static string Mac12(string addr) =>
         addr.Trim().Replace(":", "").Replace("-", "").ToUpperInvariant();
@@ -80,6 +89,23 @@ public sealed class KeysRole : IDisposable
     {
         var m = VidPidRe.Match(nodeName);
         return m.Success ? (m.Groups[1].Value, m.Groups[2].Value, m.Groups[3].Value) : null;
+    }
+
+    /// <summary>按 MAC 从 BTHLEDevice 节点名读硬件 rev（同型号版本区分；取不到空）。
+    /// 推送型按键判定用（rev=0110 的 Google 遥控器报告不进 HID 读 IOCTL）。</summary>
+    internal static string RevOfMac(string mac12)
+    {
+        try
+        {
+            using var root = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Enum\BTHLEDevice");
+            if (root is null) return "";
+            foreach (var node in root.GetSubKeyNames())
+                if (BthleMacOf(node) == mac12 && BthleVidPidOf(node) is { } vp)
+                    return vp.Rev;
+        }
+        catch { /* 注册表读不到 → 视为非推送型 */ }
+        return "";
     }
 
     public volatile bool Ready;
@@ -175,11 +201,11 @@ public sealed class KeysRole : IDisposable
         if (pipe is null)
             pipe = await InjectAndConnect("");
         if (pipe is null) return;
-        // ★ 协议握手（tap 3）：WUDFHost 常驻 —— 主程序部署新版后，管道里连到的
-        //   可能还是旧版驻留 DLL（管道名不变；旧协议不认识 filter/block 偏移，
-        //   学习模式开了也收不到报告）。握手不符 = 卸旧注新，一次自动升级。
+        // ★ 协议握手（tap 4）：WUDFHost 常驻 —— 主程序部署新版后，管道里连到的
+        //   可能还是旧版驻留 DLL（管道名不变；旧协议不认识 filter/block 偏移与
+        //   mac/gatt 指令，学习模式/推送型按键收不到报告）。握手不符 = 卸旧注新。
         var hello = await ReadHello(pipe, ct);
-        if (hello != "tap 3")
+        if (hello != "tap 5")
         {
             await _log($"按键：DLL 协议握手不符（{hello ?? "(无)"}）—— 卸载旧版并升级注入");
             try
@@ -194,7 +220,7 @@ public sealed class KeysRole : IDisposable
             pipe = await InjectAndConnect("tap.dll 升级");
             if (pipe is null) return;
             hello = await ReadHello(pipe, ct);
-            if (hello != "tap 3")
+            if (hello != "tap 5")
             {
                 Note = "tap.dll 协议握手失败";
                 await _log($"按键：升级后握手仍不符（{hello ?? "(无)"}）");
@@ -215,6 +241,16 @@ public sealed class KeysRole : IDisposable
         // 下发当前指纹（学习进行中则全量上报）+ 已映射键的清位表
         await WritePipeAsync(pipe, FilterBytes());
         await SendBlockAsync(pipe);
+
+        // 推送型设备（rev 0110）：通知 DLL 启用 GATT 合成，并下发选中设备地址
+        // （DLL 用它在驱动回调里过滤其他遥控器）。其他 rev 一律 gatt 0，零影响。
+        var mac12 = Mac12(_getAddr());
+        if (mac12.Length == 12)
+        {
+            await WritePipeAsync(pipe, Encoding.ASCII.GetBytes($"mac {mac12}\n"));
+            var gatt = RevOfMac(mac12) is "0110";
+            await WritePipeAsync(pipe, Encoding.ASCII.GetBytes($"gatt {(gatt ? 1 : 0)}\n"));
+        }
 
         // 2) 报文循环
         using var reader = new StreamReader(pipe, Encoding.ASCII);

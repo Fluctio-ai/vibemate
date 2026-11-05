@@ -310,6 +310,7 @@ internal static class Program
         voice.BadSession += n => tray.Toast("语音连接异常",
             n >= 3 ? "蓝牙会话连续异常，建议取一次遥控器电池再装回" : "蓝牙会话异常，正在自动重建…");
 
+        var lastAddr = config.Get("remote_addr", "");
         config.ConfigChanged += cfg =>
         {
             Log("INFO", $"配置已更新并落盘（{cfg.Count} 项顶层字段）");
@@ -319,6 +320,15 @@ internal static class Program
             keys.ReloadProfile();             // 报告指纹即时生效（切设备/学习保存）
             // 互斥：语音键被映射成普通键 → VoiceKey 停发（避免双发）
             voice.VoiceKeyEnabled = cfg["keys"]?["voice"] is null;
+            // 切换选中设备：立刻踢掉当前会话按新地址重连（否则要重启应用才生效）
+            var addr = cfg["remote_addr"]?.GetValue<string>() ?? "";
+            if (addr != lastAddr)
+            {
+                lastAddr = addr;
+                keys.KickSession();
+                voice.KickSession();
+                Log("INFO", $"选中设备已切换 → {addr}，按键/语音会话重建");
+            }
         };
 
         Log("INFO", $"启动完成：http://127.0.0.1:{port}（PID {Environment.ProcessId}）");

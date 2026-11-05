@@ -316,6 +316,7 @@ public sealed class VoiceRole : IDisposable
         // 挂着：等设备断开（Watch 状态）或本端取消。10s 无任何动静也继续挂——
         // 语音键不按的时候特征就是静默的，不能当超时依据。
         var tcs = new TaskCompletionSource();
+        _sessionTcs = tcs;                      // 切设备时 KickSession 用它立刻收尾
         TypedEventHandler<BluetoothLEDevice, object> onConn = (d, _) =>
         {
             if (d.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
@@ -324,6 +325,7 @@ public sealed class VoiceRole : IDisposable
         dev.ConnectionStatusChanged += onConn;
         using var reg = ct.Register(() => tcs.TrySetResult());
         await tcs.Task;
+        _sessionTcs = null;
 
         dev.ConnectionStatusChanged -= onConn;
         status.ValueChanged -= OnStatus;
@@ -393,7 +395,13 @@ public sealed class VoiceRole : IDisposable
         using (var dr = Windows.Storage.Streams.DataReader.FromBuffer(buf))
             dr.ReadBytes(b);
         _lastFrame = Environment.TickCount64;
-        var pressed = b[0] == 0x04;
+        // ATVV 控制通道 opcode（上游协议表）：0x00=音频停止、0x04=音频开始、
+        // 0x08=麦克风按键、0x0A=音频同步、0x0B=能力上报。
+        // 0110 版遥控器按语音键发 0x08（老设备是 0x04），两者都算按下；
+        // 松开以 0x00（音频停止）为准。0x0A/0x0B 与按键无关，忽略。
+        var code = b[0];
+        if (code is not (0x00 or 0x04 or 0x08)) return;
+        var pressed = code is 0x04 or 0x08;
         VoiceKeyEvent?.Invoke(pressed);
         if (VoiceKeyEnabled)
         {
@@ -432,6 +440,15 @@ public sealed class VoiceRole : IDisposable
     /// <summary>遥控器刚有按键活动 —— 现在它醒着，立刻重试连接（v1 poke 机制：
     /// 遥控器只在刚醒的一小段时间能被连上，等退避睡满就错过窗口了）。</summary>
     public void Poke() => _poke.Set();
+
+    private volatile TaskCompletionSource? _sessionTcs;
+
+    /// <summary>选中设备变更：结束当前会话，主循环下一轮按新地址重连。</summary>
+    public void KickSession()
+    {
+        var t = _sessionTcs;
+        if (t is not null) t.TrySetResult();
+    }
 
     /// <summary>蓝牙会话残缺（烂会话）次数变化；n≥3 建议用户干预（托盘气泡用）。</summary>
     public event Action<int>? BadSession;

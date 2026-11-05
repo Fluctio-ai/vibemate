@@ -36,6 +36,7 @@
 #include <sddl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "MinHook.h"
 
 /* 诊断日志（排障用；正式版可保留——文件小、只 append） */
@@ -105,6 +106,215 @@ static void send_line(const char *line)
         /* 失败不重试：主程序侧断开由管道线程的 ReadFile 错误兜住 */
     }
     LeaveCriticalSection(&g_send_cs);
+}
+
+/* ================= GATT 按键源（推送型 HID-over-GATT 遥控器）=================
+ * 0110 版 Google 遥控器的按键不产生 HID 读 IOCTL（Windows 侧只有消费控制集合、
+ * 没有 kbdhid/mouhid 读者），报告由 HidOverGatt 驱动直接消费。这里挂钩驱动的
+ * HogpGattAdapter::OnReportValueChanged，把 8 字节厂商报告 / 2 字节消费页报告
+ * 归一成 Google 3 字节报告（02 + usage LE16）交给主程序 —— 复用现有指纹、
+ * 映射与学习模式，主程序侧零特判。
+ * 仅在主程序下发 `gatt 1`（选中设备 rev=0110）时生效；其他设备零影响。
+ * 回调签名（本机驱动反汇编验证）：void (HogpGattAdapter*, ULONGLONG addr, IBuffer*)。
+ */
+static HMODULE g_heg;
+static void (*g_report_orig)(void *, void *, void *);
+static volatile LONG g_gatt_on;          /* 主程序下发：启用 GATT 合成 */
+static volatile LONG g_gatt_ready;       /* hook 已安装 */
+static volatile LONG g_gatt_last = -1;   /* 上次转发的 usage（-1=未发过） */
+static volatile ULONGLONG g_gatt_mac;    /* 选中设备地址（低 48 位） */
+
+/* code → usage（上游远端码表，2026-11 真机验证 03/04/05/06/0a/0b/00） */
+static USHORT gatt_code_usage(int code)
+{
+    switch (code) {
+    case 0x01: return 0x019E;   /* power */
+    case 0x03: return 0x0042;   /* up */
+    case 0x04: return 0x0043;   /* down */
+    case 0x05: return 0x0044;   /* left */
+    case 0x06: return 0x0045;   /* right */
+    case 0x07: return 0x0041;   /* ok */
+    case 0x08: return 0x00E2;   /* mute */
+    case 0x0A: return 0x0223;   /* home */
+    case 0x0B: return 0x0224;   /* back */
+    case 0x0C: return 0x00E9;   /* volup */
+    case 0x0D: return 0x00EA;   /* voldown */
+    case 0x0E: return 0x0077;   /* youtube */
+    case 0x0F: return 0x0078;   /* netflix */
+    case 0x11: return 0x0189;   /* input */
+    default:   return 0;
+    }
+}
+
+static int gatt_usage_known(USHORT u)
+{
+    return u == 0x019E || u == 0x0189 || (u >= 0x0041 && u <= 0x0045)
+        || u == 0x0224 || u == 0x0223 || u == 0x00E9 || u == 0x00EA
+        || u == 0x00E2 || u == 0x0077 || u == 0x0078;
+}
+
+static void gatt_forward(USHORT usage)
+{
+    char l[24];
+    if ((LONG)usage == g_gatt_last) return;
+    g_gatt_last = usage;
+    wsprintfA(l, "report 3 02 %02x %02x\n", usage & 0xFF, (usage >> 8) & 0xFF);
+    send_line(l);
+}
+
+static int ptr_ok(const void *p)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!p || VirtualQuery(p, &mbi, sizeof(mbi)) == 0) return 0;
+    return mbi.State == MEM_COMMIT && !(mbi.Protect & PAGE_GUARD)
+        && !(mbi.Protect & PAGE_NOACCESS);
+}
+
+/* 报告缓冲（WinRT IBuffer）→ 长度；失败返回 -1 */
+static LONG gatt_len(void *buf)
+{
+    ULONG n = 0;
+    if (!ptr_ok(buf) || !ptr_ok(*(void **)buf)) return -1;
+    void **vt = *(void ***)buf;
+    typedef int (__attribute__((fastcall)) *LengthFn)(void *, ULONG *);
+    LengthFn fn = (LengthFn)vt[7];
+    if (!fn || !ptr_ok((void *)fn) || fn(buf, &n) != 0) return -1;
+    return (LONG)n;
+}
+
+/* 报告缓冲 → 数据指针（IBufferByteAccess；调用方负责 Release） */
+static BYTE *gatt_data(void *buf, void **access_out)
+{
+    static const unsigned char iid[16] = {
+        0xef,0x0f,0x5a,0x90,0x53,0xbc,0xdf,0x11,
+        0x8c,0x49,0x00,0x1e,0x4f,0xc6,0x86,0xda };
+    void **vt = *(void ***)buf;
+    typedef int (__attribute__((fastcall)) *QI)(void *, const void *, void **);
+    typedef int (__attribute__((fastcall)) *BufFn)(void *, BYTE **);
+    QI qi = (QI)vt[0];
+    void *acc = NULL;
+    if (!qi || qi(buf, iid, &acc) != 0 || !ptr_ok(acc) || !ptr_ok(*(void **)acc))
+        return NULL;
+    void **avt = *(void ***)acc;
+    BufFn bf = (BufFn)avt[3];
+    BYTE *data = NULL;
+    if (!bf || bf(acc, &data) != 0) {
+        typedef unsigned long (__attribute__((fastcall)) *Rel)(void *);
+        Rel rel = (Rel)avt[2];
+        if (rel) rel(acc);
+        return NULL;
+    }
+    *access_out = acc;
+    return data;
+}
+
+static volatile LONG g_gatt_cb, g_gatt_fwd;   /* 排障计数 */
+static volatile LONG g_diag_mac, g_diag_len, g_diag_data, g_diag_code, g_diag_buf;
+
+static void __attribute__((fastcall)) detour_report(void *self, void *addr, void *buf)
+{
+    if (g_gatt_on) {
+        /* 设备地址以 adapter 自身字段为准（this+0x18，构造函数写入）；
+           a2 在部分回调里不是地址（实测为堆指针），不能当过滤依据。 */
+        ULONGLONG self_mac = self
+            ? *(volatile ULONGLONG *)((BYTE *)self + 0x18) & 0xFFFFFFFFFFFFULL : 0;
+        ULONGLONG a2mac = (ULONGLONG)addr & 0xFFFFFFFFFFFFULL;
+        ULONGLONG dev = self_mac ? self_mac : a2mac;
+        if (InterlockedIncrement(&g_gatt_cb) == 1)
+            logf("[gatt] first cb selfMac=%lx%08lx a2=%lx%08lx\n",
+                 (unsigned long)(self_mac >> 32), (unsigned long)(self_mac & 0xFFFFFFFF),
+                 (unsigned long)(a2mac >> 32), (unsigned long)(a2mac & 0xFFFFFFFF));
+        if (g_gatt_mac && dev != g_gatt_mac) {
+            if (!g_diag_mac) {
+                g_diag_mac = 1;
+                logf("[gatt] mac mismatch got=%lx%08lx want=%lx%08lx\n",
+                     (unsigned long)(dev >> 32), (unsigned long)(dev & 0xFFFFFFFF),
+                     (unsigned long)(g_gatt_mac >> 32),
+                     (unsigned long)(g_gatt_mac & 0xFFFFFFFF));
+            }
+        } else if (!buf) {
+            if (!g_diag_buf) { g_diag_buf = 1; logf("[gatt] buf null\n"); }
+        } else {
+            LONG n = gatt_len(buf);
+            if (n < 0) {
+                if (!g_diag_len) { g_diag_len = 1; logf("[gatt] len fail\n"); }
+            } else if (n <= 8) {
+                void *acc = NULL;
+                BYTE *data = gatt_data(buf, &acc);
+                if (!data) {
+                    if (!g_diag_data) { g_diag_data = 1; logf("[gatt] data fail n=%ld\n", n); }
+                } else if (n == 8) {
+                    int code = data[0];
+                    int tail_zero = 1;
+                    for (LONG i = 1; i < 8; i++) if (data[i]) { tail_zero = 0; break; }
+                    USHORT u = code ? gatt_code_usage(code) : 0;
+                    if (tail_zero && (code == 0 || u)) {
+                        gatt_forward(u);
+                        InterlockedIncrement(&g_gatt_fwd);
+                        if (!g_diag_code)
+                            logf("[gatt] first fwd code=%d usage=%04x\n", code, u);
+                        g_diag_code = 1;
+                    } else if (!g_diag_code) {
+                        g_diag_code = 1;
+                        logf("[gatt] code rejected code=%d tail_zero=%d\n", code, tail_zero);
+                    }
+                } else if (n == 2) {
+                    USHORT u = (USHORT)(data[0] | (data[1] << 8));
+                    if (u == 0 || gatt_usage_known(u)) {
+                        gatt_forward(u);
+                        InterlockedIncrement(&g_gatt_fwd);
+                    }
+                }
+                if (acc) {
+                    typedef unsigned long (__attribute__((fastcall)) *Rel)(void *);
+                    Rel rel = (Rel)(*(void ***)acc)[2];
+                    if (rel) rel(acc);
+                }
+            }
+        }
+    }
+    g_report_orig(self, addr, buf);
+}
+
+/* 在 HidOverGatt 的 .text 里按签名定位 OnReportValueChanged（不写死 RVA） */
+static int gatt_sig_match(const BYTE *p)
+{
+    static const BYTE pre[19] = { 0x40,0x53,0x56,0x57,0x41,0x54,0x41,0x55,
+        0x41,0x56,0x41,0x57,0x48,0x81,0xEC,0xF0,0x00,0x00,0x00 };
+    static const BYTE mid[3] = { 0x48,0x8B,0x05 };
+    static const BYTE post[23] = { 0x48,0x33,0xC4,0x48,0x89,0x84,0x24,0xE0,
+        0x00,0x00,0x00,0x4D,0x8B,0xF0,0x48,0x8B,0xDA,0x4C,0x8B,0xE9,0x4C,0x8D,0x3D };
+    return !memcmp(p, pre, sizeof(pre)) && !memcmp(p + 19, mid, sizeof(mid))
+        && !memcmp(p + 26, post, sizeof(post));
+}
+
+static void gatt_install(void)
+{
+    if (g_gatt_ready) return;
+    if (!g_heg)
+        g_heg = GetModuleHandleW(L"microsoft.bluetooth.profiles.hidovergatt.dll");
+    if (!g_heg) { logf("[gatt] module not loaded\n"); return; }
+    PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)g_heg;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+    PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)((BYTE *)g_heg + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return;
+    PIMAGE_SECTION_HEADER sh = IMAGE_FIRST_SECTION(nt);
+    BYTE *cb = NULL;
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections && !cb; i++) {
+        if (memcmp(sh[i].Name, ".text", 5)) continue;
+        BYTE *p = (BYTE *)g_heg + sh[i].VirtualAddress;
+        DWORD sz = sh[i].Misc.VirtualSize;
+        for (DWORD k = 0; k + 49 <= sz; k++)
+            if (gatt_sig_match(p + k)) { cb = p + k; break; }
+    }
+    if (!cb) { logf("[gatt] signature not found (unsupported build)\n"); return; }
+    if (MH_CreateHook(cb, (LPVOID)detour_report, (LPVOID *)&g_report_orig) != MH_OK
+        || MH_EnableHook(cb) != MH_OK) {
+        logf("[gatt] hook failed\n");
+        return;
+    }
+    InterlockedExchange(&g_gatt_ready, 1);
+    logf("[gatt] hook installed rva=%lX\n", (unsigned long)(cb - (BYTE *)g_heg));
 }
 
 static void hexn(const BYTE *p, int n, char *out /* >= n*3+1 */)
@@ -315,6 +525,7 @@ static DWORD WINAPI pipe_thread(LPVOID unused)
         return 0;
     }
     logf("[tap] hook enabled, waiting for client...\n");
+    gatt_install();
 
     if (!ConnectNamedPipe(g_pipe, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) {
         /* 主程序一直不来（注入器只注入不连？）—— 等 60s 再放弃 */
@@ -326,7 +537,7 @@ static DWORD WINAPI pipe_thread(LPVOID unused)
     g_pipe_ok = 1;
     /* 协议握手：主程序据此识别 DLL 版本。WUDFHost 常驻 —— 主程序部署新版后
        连到的可能还是旧版驻留 DLL（管道名不变），靠这行发现并升级重注入。 */
-    send_line("tap 3\n");
+    send_line("tap 5\n");
     send_hb();
 
     char rbuf[512];
@@ -348,6 +559,26 @@ static DWORD WINAPI pipe_thread(LPVOID unused)
                         apply_block(line + 6);
                     else if (!strncmp(line, "filter ", 7))
                         apply_filter(line + 7);
+                    else if (!strncmp(line, "mac ", 4)) {
+                        ULONGLONG m = 0;
+                        const char *s = line + 4;
+                        for (int i = 0; i < 12 && s[i]; i++) {
+                            int d = s[i] >= '0' && s[i] <= '9' ? s[i] - '0'
+                                  : s[i] >= 'a' && s[i] <= 'f' ? s[i] - 'a' + 10
+                                  : s[i] >= 'A' && s[i] <= 'F' ? s[i] - 'A' + 10 : -1;
+                            if (d < 0) { m = 0; break; }
+                            m = (m << 4) | (ULONGLONG)d;
+                        }
+                        g_gatt_mac = m;
+                        logf("[gatt] mac=%lx%08lx\n",
+                             (unsigned long)(m >> 32), (unsigned long)(m & 0xFFFFFFFF));
+                    }
+                    else if (!strncmp(line, "gatt ", 5)) {
+                        LONG on = line[5] == '1';
+                        InterlockedExchange(&g_gatt_on, on);
+                        if (on) gatt_install();
+                        logf("[gatt] mode=%ld\n", on);
+                    }
                     else if (!strcmp(line, "ping"))
                         send_hb();
                     else if (!strcmp(line, "unload")) {
