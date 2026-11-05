@@ -29,17 +29,7 @@ internal static class ProfileStore
     private static readonly string CloudDir = Path.Combine(DataRoot, "profiles-cache");
     private static readonly string IndexPath = Path.Combine(CloudDir, "index.json");
 
-    // 云端 profiles/ 随 devices.json 走同一个仓库（Fluctio-ai/vibemate）；改仓库只动这里
-    private static readonly string[] IndexUrls =
-    {
-        "https://cdn.jsdelivr.net/gh/Fluctio-ai/vibemate@main/profiles/index.json",
-        "https://raw.githubusercontent.com/Fluctio-ai/vibemate/main/profiles/index.json",
-    };
-    private static string[] FileUrls(string file) => new[]
-    {
-        $"https://cdn.jsdelivr.net/gh/Fluctio-ai/vibemate@main/profiles/{file}",
-        $"https://raw.githubusercontent.com/Fluctio-ai/vibemate/main/profiles/{file}",
-    };
+    // 云端 profiles/ 随 devices.json 走同一个仓库；源列表由 CloudSource 统一拼装
 
     static ProfileStore() => LoadIndexCache();
 
@@ -493,7 +483,7 @@ internal static class ProfileStore
 
     private static async Task<bool> FetchIndexAsync()
     {
-        foreach (var url in IndexUrls)
+        foreach (var url in CloudSource.UrlsFor("profiles/index.json"))
         {
             try
             {
@@ -657,7 +647,7 @@ internal static class ProfileStore
         if (entry is null) return (null, "云端查询还没完成（先 lookup）");
         var file = entry["file"]!.GetValue<string>();
         var wantSha = entry["sha256"]?.GetValue<string>() ?? "";
-        foreach (var url in FileUrls(file))
+        foreach (var url in CloudSource.UrlsFor($"profiles/{file}"))
         {
             try
             {

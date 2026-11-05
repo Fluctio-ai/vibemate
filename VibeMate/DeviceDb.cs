@@ -22,13 +22,7 @@ internal static class DeviceDb
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
         "VibeMate", "devices.json");
 
-    // 表随仓库走（Fluctio-ai/vibemate 根目录 devices.json）；改仓库/表路径只动这里
-    private static readonly string[] RemoteUrls =
-    {
-        "https://cdn.jsdelivr.net/gh/Fluctio-ai/vibemate@main/devices.json",
-        "https://raw.githubusercontent.com/Fluctio-ai/vibemate/main/devices.json",
-    };
-
+    // 表随仓库走（Fluctio-ai/vibemate 根目录 devices.json）；源列表由 CloudSource 统一拼装
     static DeviceDb() => Load();
 
     /// <summary>内置表版本（Load 时读出）。云端拉表/缓存只有 version ≥ 它才生效 ——
@@ -82,7 +76,7 @@ internal static class DeviceDb
     {
         _ = Task.Run(async () =>
         {
-            foreach (var url in RemoteUrls)
+            foreach (var url in CloudSource.UrlsFor("devices.json"))
             {
                 try
                 {

@@ -111,6 +111,7 @@ internal static class Program
 
         var config = new ConfigService(Path.Combine(_baseDir, "config.json"));
         var port = config.Get("ui_port", 8787);
+        CloudSource.CustomPrefix = NormProxy(config.Get("gh_proxy", ""));
 
         // 释放随行文件（一键安装脚本/试用说明）：单 exe 分发时的自助安装入口。
         // ★ 每次启动都覆盖 —— 脚本跟 exe 版本走，不沉淀旧版
@@ -315,6 +316,7 @@ internal static class Program
         config.ConfigChanged += cfg =>
         {
             Log("INFO", $"配置已更新并落盘（{cfg.Count} 项顶层字段）");
+            CloudSource.CustomPrefix = NormProxy(cfg["gh_proxy"]?.GetValue<string>() ?? "");
             voice.ReloadKey();                // 语音键目标即时生效
             voice.ApplyAudio();               // 增益/AGC/直通即时生效
             keys.ReloadMapping();             // 按键映射即时生效（block 表随下轮会话）
@@ -401,6 +403,11 @@ internal static class Program
     /// 各调用点手抄 lambda 已经抄出过三种写法，收拢成一处）。</summary>
     internal static Func<string, Task> LogAs(string tag)
         => m => { Log(tag, m); return Task.CompletedTask; };
+
+    /// <summary>gh_proxy 配置规整：空白 → null（未启用），其余去空白（拼接细节
+    /// 留给 CloudSource，这里只做「启用与否」的判定）。</summary>
+    private static string? NormProxy(string s)
+        => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
     /// <summary>runas 拉起自身子进程（--inject-only / --install-cable 共用的一次性提权：
     /// 一次 UAC、干完即退）。false = UAC 被拒/启动失败（真实原因已入日志，调用方自己定文案）。</summary>

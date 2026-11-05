@@ -66,9 +66,10 @@ public sealed class ConfigService : IDisposable
             foreach (var (k, v) in patch)
             {
                 // 白名单：v1 兼容字段 + v2 devices + cable_optout（卸载标记，见 Program 看护）
+                // + gh_proxy（GitHub 加速前缀，见 CloudSource）
                 if (k is "ui_port" or "remote_addr"
                     or "voice" or "audio" or "keys" or "devices" or "_comment"
-                    or "cable_optout")
+                    or "cable_optout" or "gh_proxy")
                     merged[k] = v?.DeepClone();
             }
         }
@@ -94,6 +95,15 @@ public sealed class ConfigService : IDisposable
         if (cfg["cable_optout"] is { } co
             && co.GetValueKind() != JsonValueKind.True && co.GetValueKind() != JsonValueKind.False)
             return (false, "cable_optout 必须是布尔值");
+        if (cfg["gh_proxy"] is { } gp)
+        {
+            if (gp.GetValueKind() != JsonValueKind.String)
+                return (false, "gh_proxy 必须是字符串");
+            var s = gp.GetValue<string>().Trim();
+            if (s.Length > 0 && !s.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                && !s.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                return (false, "gh_proxy 必须以 http:// 或 https:// 开头");
+        }
         return (true, "");
     }
 

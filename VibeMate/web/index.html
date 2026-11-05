@@ -385,6 +385,8 @@
       <label style="display:flex;gap:8px;align-items:center;margin-top:16px">
         <input type="checkbox" id="autostart" style="width:auto">开机自启（登录时静默启动，含按键注入所需的最高权限）
       </label>
+      <label for="gh_proxy" style="margin-top:16px">GitHub 加速前缀（云端档案拉不动时填反代地址，如 https://gh-proxy.org/；留空 = 内置多源自动轮询）</label>
+      <input id="gh_proxy" type="text" placeholder="https://gh-proxy.org/" style="max-width:340px">
       <div style="margin-top:16px"><button id="save">保存端口</button><span id="msg" class="msg" role="status"></span></div>
     </div>
 
@@ -615,7 +617,10 @@ async function loadState() {
     $('v-mode').dataset.loaded = 1;
     updateVoicePreview();
   }
-  $('ui_port').value = s.config.ui_port ?? 8787;
+  // 回填不得碰用户正在编辑的框：这里 2s 一轮，裸赋值会把输入到一半的内容
+  // 直接抹回后端旧值（看起来就像「保存了又丢」）
+  if (document.activeElement !== $('ui_port')) $('ui_port').value = s.config.ui_port ?? 8787;
+  if (document.activeElement !== $('gh_proxy')) $('gh_proxy').value = s.config.gh_proxy ?? '';
   loadAudio();
 }
 
@@ -1471,6 +1476,17 @@ $('save').onclick = async () => {
   const r = await postConfig({ ui_port: Number($('ui_port').value) });
   $('msg').textContent = r.ok ? '端口已保存 ✓（重启后生效）' : '失败：' + r.msg;
   btn.disabled = false; await loadState();
+};
+// 加速前缀输入即存（600ms 静默自动保存）：不留「填完没失焦就刷新/切页」丢配置的口子
+let _gpT = 0;
+$('gh_proxy').oninput = () => {
+  clearTimeout(_gpT);
+  _gpT = setTimeout(async () => {
+    const r = await postConfig({ gh_proxy: $('gh_proxy').value.trim() });
+    $('msg').textContent = r.ok
+      ? ($('gh_proxy').value.trim() ? '加速前缀已保存 ✓（即时生效）' : '已清空，恢复内置多源轮询 ✓')
+      : '失败：' + r.msg;
+  }, 600);
 };
 
 // ---- 日志（初始只拉最新 20 条，按需加载更多；自动刷新保持当前条数）----
