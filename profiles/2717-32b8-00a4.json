@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "device": {
+    "vid": "2717",
+    "pid": "32b8",
+    "revs": ["00a4"],
+    "names": ["mi rc", "xiaomi bluetooth remote 2 pro", "小米蓝牙语音遥控器"]
+  },
+  "voice": "atvv",
+  "report": { "len": 9, "id": 1, "off": 3, "w": 1 },
+  "labels": {
+    "0x00f1": "back",
+    "0x0080": "volup",
+    "0x0081": "voldown",
+    "0x0028": "ok",
+    "0x004a": "home",
+    "0x004f": "right",
+    "0x0050": "left",
+    "0x0051": "down",
+    "0x0052": "up"
+  },
+  "meta": {
+    "author": "vibemate",
+    "updated": "2026-11-05T12:00:00Z",
+    "source": "builtin",
+    "verified": true,
+    "note": "小米蓝牙遥控器2 Pro (RC003)，报文数据源 axonkey 真机实测 2026-09-09"
+  }
+}

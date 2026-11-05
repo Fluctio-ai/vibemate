@@ -211,6 +211,7 @@ internal static class Program
         keys.ReloadMapping();               // 启动即装载映射表（ConfigChanged 只覆盖后续变更）
         keys.ReloadProfile();               // 启动即装载报告指纹（同上）
         DeviceDb.RefreshAsync();            // 已知设备表后台刷新（内置兜底，失败静默）
+        ProfileStore.RefreshIndexAsync();   // 云端档案索引后台刷新（12h 过期，失败静默）
         UpdateCheck.Start();                // 版本检查后台循环（结果进 /api/state.update）
         voice.Start();                      // HTTP 已随 Bind 启动
         keys.Start();

@@ -387,6 +387,28 @@
       </label>
       <div style="margin-top:16px"><button id="save">保存端口</button><span id="msg" class="msg" role="status"></span></div>
     </div>
+
+    <!-- 设备配置档案（docs/device-profiles.md）：可移植的「出厂配置」，随包/本机/云端三源 -->
+    <div class="card"><h3>设备配置档案</h3>
+      <div class="row"><span class="k">当前设备</span><span id="dp-id">—</span></div>
+      <div class="row"><span class="k">配置来源</span><span id="dp-source">—</span></div>
+      <div style="font-size:12px;color:var(--mut);margin:6px 0 12px;line-height:1.7">
+        档案 = 这台遥控器的可分享配置（报告指纹 + 键名，不含蓝牙地址与你的自定义映射）。
+        内置 / 本机有档案 → 按键开箱即用；没有的自动查云端社区配置；
+        都没有 → 用「按键映射」页的设备学习录入，学完自动生成本机档案，欢迎导出回馈社区。
+      </div>
+      <div class="toolbar" style="flex-wrap:wrap">
+        <button class="ghost" id="dp-lookup">查云端配置</button>
+        <button class="ghost" id="dp-export">导出档案</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--mut);margin:0">
+          <input type="checkbox" id="dp-with-actions" style="width:auto">含按键映射（可选分享）</label>
+        <button class="ghost" id="dp-import">导入档案…</button>
+        <input type="file" id="dp-file" accept=".json,application/json" style="display:none">
+      </div>
+      <span class="msg" role="status" id="dp-msg"></span>
+      <div id="dp-cloud" style="display:none;margin-top:10px"></div>
+      <div id="dp-confirm" style="display:none;margin-top:10px"></div>
+    </div>
   </section>
 
   <!-- 安装帮助 -->
@@ -603,6 +625,7 @@ function loadSettingsExtras() {
   fetch('/api/autostart').then(r => r.json())
     .then(r => $('autostart').checked = r.enabled).catch(() => {});
   loadBtDevices(CFG?.remote_addr ?? '');
+  loadDeviceProfile();   // 档案卡（来源徽标 + 云端状态；无档案时自动发起查询）
 }
 
 // ---- 按键映射表 ----
@@ -1207,9 +1230,12 @@ async function loadBtDevices(selected) {
     const cur = selected || sel.value || CFG?.remote_addr || '';
     sel.innerHTML = '<option value="">（不启用语音）</option>' +
       (r.devices || []).map(d => {
-        // 已知型号（设备库命中）优先展示型号；未知设备显示蓝牙名；rev=硬件版本（排障可见）
+        // 已知型号（设备库命中）优先展示型号；未知设备显示蓝牙名；rev=硬件版本（排障可见）；
+        // 有配置档案的设备加徽标（本机=学过/导入过，内置=随包常见设备）
+        const badge = d.profileSource === 'local' ? ' · 📗本机档案'
+                    : d.profileSource === 'packaged' ? ' · 📘内置档案' : '';
         const label = (d.model ? `${d.model} · ${d.name || '未命名'}${d.voice === 'atvv' ? ' 🎤' : ''}`
-                               : (d.name || '未命名')) + (d.rev ? ` · rev ${d.rev}` : '');
+                               : (d.name || '未命名')) + (d.rev ? ` · rev ${d.rev}` : '') + badge;
         return `<option value="${d.addr}" ${d.addr === cur ? 'selected' : ''}>${label} — ${d.addr}</option>`;
       }).join('');
     return (r.devices || []).length;
@@ -1222,6 +1248,158 @@ $('bt-refresh').onclick = async () => {
   btn.disabled = false; btn.textContent = old2;
   btn.classList.add('flash');
   setTimeout(() => btn.classList.remove('flash'), 900);
+};
+
+// ---- 设备配置档案（docs/device-profiles.md）：来源徽标 + 云端查询/下载/导入导出 ----
+let dpDeviceId = '', dpPoll = null, dpDismissed = null;
+window._dpPend = null;   // 待确认的导入（文件 json 或云端 download）
+const DP_SRC = {
+  local:    ['本机档案', 'var(--ok)'],
+  packaged: ['内置档案', 'var(--acc)'],
+  none:     ['无 —— 可查云端或用设备学习', 'var(--mut)'],
+};
+async function loadDeviceProfile(auto = true) {
+  let p;
+  try { p = await (await fetch('/api/device-profile')).json(); }
+  catch { return; }                       // 服务瞬断：下轮轮询自愈
+  clearTimeout(dpPoll); dpPoll = null;    // 置 null：下面的「在查就续订」靠它判空
+  if (!p.deviceId) {
+    dpDeviceId = '';
+    setHtmlIfChanged($('dp-id'), '<span style="color:var(--mut)">未选择遥控器（先在上方选中）</span>');
+    setHtmlIfChanged($('dp-source'), '—');
+    $('dp-cloud').style.display = 'none';
+    $('dp-confirm').style.display = 'none';
+    return;
+  }
+  dpDeviceId = p.deviceId;
+  setHtmlIfChanged($('dp-id'),
+    `<b>${p.deviceId}</b>${p.userConfigured ? ' · <span style="color:var(--ok)">已有本机学习配置</span>' : ''}`);
+  const [sl, sc] = DP_SRC[p.source] || DP_SRC.none;
+  setHtmlIfChanged($('dp-source'),
+    `<span style="color:${sc}">${sl}${p.buttons ? `（${p.buttons} 个键名）` : ''}</span>`);
+
+  // 云端询问/提示区：本地已有档案就不打扰；没有 → 自动查一次（设计稿 §3 主路径）
+  const c = p.cloud || {}, pend = p.pending || {};
+  const cloudEl = $('dp-cloud');
+  if (p.source !== 'none') cloudEl.style.display = 'none';
+  else if (c.status === 'found') {
+    cloudEl.style.display = '';
+    setHtmlIfChanged(cloudEl,
+      `<div style="padding:10px 14px;border:1px solid var(--line);border-radius:8px;font-size:13px;line-height:1.8">` +
+      `☁ 找到此设备的社区配置${c.author ? ` · 作者 ${c.author}` : ''}` +
+      `${c.updated ? ` · ${String(c.updated).slice(0, 10)}` : ''} · ${c.buttons ?? '?'} 个按键` +
+      `<div class="toolbar" style="margin-top:8px">` +
+      `<button onclick="dpDownload()">下载并应用</button>` +
+      `<button class="ghost" onclick="dpSkip()">跳过（本次不再问）</button></div></div>`);
+  } else if (c.status === 'none') {
+    cloudEl.style.display = '';
+    setHtmlIfChanged(cloudEl,
+      `<div style="padding:10px 14px;border:1px dashed var(--line);border-radius:8px;font-size:13px;line-height:1.8">` +
+      `云端暂无此设备的配置 —— 可用「设备学习」手动录入（学完自动生成本机档案，欢迎导出回馈社区）` +
+      `<div class="toolbar" style="margin-top:8px">` +
+      `<button onclick="dpGoLearn()">去设备学习</button></div></div>`);
+  } else if (c.status === 'error') {
+    cloudEl.style.display = '';
+    setHtmlIfChanged(cloudEl,
+      `<div class="msg warn">云端查询失败：${c.msg || '网络不可达'} —— 可稍后点「查云端配置」重试</div>`);
+  } else if (c.status === 'querying') {
+    cloudEl.style.display = '';
+    setHtmlIfChanged(cloudEl, '<div class="msg">云端查询中…（约几秒）</div>');
+    dpPoll = setTimeout(() => loadDeviceProfile(false), 1500);
+  } else if (auto && !sessionStorage['dp-skip:' + p.deviceId]) {
+    dpLookup();                            // 无档案 + 未查过 + 用户没拒绝 → 自动发起
+  } else cloudEl.style.display = 'none';
+
+  // 云端下载完成 → 确认框（预览 + 可选动作预设）；用户取消过就不再弹
+  if (pend.status === 'ready' && dpDismissed !== p.deviceId) {
+    dpRenderConfirm({ vid: pend.vid, pid: pend.pid, buttons: pend.buttons,
+                      hasActions: !!pend.hasActions, download: p.deviceId });
+  } else if (pend.status === 'downloading') {
+    dpPoll = setTimeout(() => loadDeviceProfile(false), 1500);
+  }
+}
+async function dpLookup(manual) {
+  if (manual && dpDeviceId) delete sessionStorage['dp-skip:' + dpDeviceId];   // 手动点=明确要查
+  try { await postJson('/api/device-profile/lookup', {}); } catch {}
+  loadDeviceProfile(false);
+}
+$('dp-lookup').onclick = () => dpLookup(true);
+window.dpSkip = () => {
+  if (dpDeviceId) sessionStorage['dp-skip:' + dpDeviceId] = '1';
+  $('dp-cloud').style.display = 'none';
+};
+window.dpGoLearn = () => document.querySelector('nav a[data-p="keys"]').click();
+window.dpDownload = async () => {
+  try { await postJson('/api/device-profile/import', { download: dpDeviceId }); } catch {}
+  loadDeviceProfile(false);                // pending → ready 后确认框出现
+};
+// 确认框（两段式导入的第二段入口）：文件导入与云端下载共用
+function dpRenderConfirm(pv) {
+  window._dpPend = pv; dpDismissed = null;
+  const el = $('dp-confirm');
+  el.style.display = '';
+  setHtmlIfChanged(el,
+    `<div style="padding:12px 14px;border:2px solid var(--acc);border-radius:8px;font-size:13px;line-height:1.8">` +
+    `档案预览：<b>${pv.vid}:${pv.pid}</b> · ${pv.buttons} 个键名` +
+    (pv.hasActions ? ' · <span style="color:var(--warn)">含动作预设</span>' : '') +
+    (pv.hasActions
+      ? `<label style="display:flex;gap:8px;align-items:center;margin-top:6px">` +
+        `<input type="checkbox" id="dp-apply-actions" style="width:auto">` +
+        `同时应用动作预设（覆盖同名按键映射）</label>` : '') +
+    `<div class="toolbar" style="margin-top:8px">` +
+    `<button onclick="dpApply()">确认导入并应用</button>` +
+    `<button class="ghost" onclick="dpCancel()">取消</button></div></div>`);
+  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+window.dpCancel = () => {
+  dpDismissed = window._dpPend?.download || dpDeviceId;   // 取消后不再自动弹（重新下载会复位）
+  window._dpPend = null;
+  $('dp-confirm').style.display = 'none';
+};
+window.dpApply = async () => {
+  const pv = window._dpPend;
+  if (!pv) return;
+  const cb = $('dp-apply-actions');
+  const body = pv.download
+    ? { download: pv.download, apply: true, applyActions: cb ? cb.checked : false }
+    : { json: pv.json, name: pv.name, apply: true, applyActions: cb ? cb.checked : false };
+  let r;
+  try { r = await postJson('/api/device-profile/import', body); }
+  catch (e) { $('dp-msg').textContent = '错误：' + e; return; }
+  $('dp-msg').textContent = r.ok ? '✓ ' + r.msg : '✗ ' + r.msg;
+  window._dpPend = null; dpDismissed = null;
+  $('dp-confirm').style.display = 'none';
+  loadDeviceProfile(false);
+};
+$('dp-export').onclick = async () => {
+  const acts = $('dp-with-actions').checked ? 1 : 0;
+  let r;
+  try { r = await fetch(`/api/device-profile/export?actions=${acts}`); }
+  catch (e) { $('dp-msg').textContent = '错误：' + e; return; }
+  const cd = r.headers.get('content-disposition') || '';
+  if (!cd.includes('attachment')) {         // 失败：后端回 JSON 说明原因
+    try { $('dp-msg').textContent = '✗ ' + (await r.json()).msg; } catch {}
+    return;
+  }
+  const blob = await r.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (cd.match(/filename="(.+)"/) || [])[1] || 'device-profile.json';
+  a.click(); URL.revokeObjectURL(a.href);
+  $('dp-msg').textContent = '✓ 已导出 —— 可发给同型号用户直接导入，或提交到社区仓库';
+};
+$('dp-import').onclick = () => $('dp-file').click();
+$('dp-file').onchange = async () => {
+  const f = $('dp-file').files[0];
+  $('dp-file').value = '';
+  if (!f) return;
+  let text;
+  try { text = await f.text(); }
+  catch (e) { $('dp-msg').textContent = '读取失败：' + e; return; }
+  const r = await postJson('/api/device-profile/import', { json: text, name: f.name });
+  if (!r.ok) { $('dp-msg').textContent = '✗ 导入失败：' + r.msg; return; }
+  $('dp-msg').textContent = '';
+  dpRenderConfirm({ ...r.preview, json: text, name: f.name });
 };
 
 // ---- 音频设置（v1 同款三件套）----
@@ -1286,6 +1464,7 @@ $('cable-uninstall').onclick = async () => {
 $('remote_addr').onchange = async () => {
   const r = await postConfig({ remote_addr: $('remote_addr').value.trim() });
   $('msg-dev').textContent = r.ok ? '已保存（即时生效）' : '失败：' + r.msg;
+  if (r.ok) loadDeviceProfile(false);   // 换设备：档案卡立刻跟上（不动云端，手动/进页再查）
 };
 $('save').onclick = async () => {
   const btn = $('save'); btn.disabled = true; $('msg').textContent = '保存中…';

@@ -10,7 +10,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>VibeMate</AssemblyName>
-    <Version>2.2.3</Version>
+    <Version>2.3.0</Version>
     <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
   </PropertyGroup>
   <!-- 发布管线收敛一处：build.yml / README 手册命令只传 -c Release 即可，
@@ -27,8 +27,13 @@
     <EmbeddedResource Include="web\**" />
     <EmbeddedResource Include="..\tap\tap.dll" LogicalName="VibeMate.tap.dll" />
     <!-- 已知遥控器指纹库（预填键名/指纹；云端源+本地学习兜底，见 DeviceDb.cs）。
-         云端源在 mumutoy/vibe-mote 仓库根的 devices.json，这里是内嵌兜底副本 -->
+         云端源在 Fluctio-ai/vibemate 仓库根的 devices.json，这里是内嵌兜底副本 -->
     <EmbeddedResource Include="..\devices.json" LogicalName="VibeMate.devices.json" />
+    <!-- 设备配置档案（docs/device-profiles.md P1：常见设备开箱即用，离线可用）。
+         资源名约定 VibeMate.profile.<文件名>（ProfileStore 按前缀枚举）；
+         同批 None+CopyToOutput：发布 zip 里带一份可读的 profiles\ 副本便于排障 -->
+    <EmbeddedResource Include="..\profiles\*.json" LogicalName="VibeMate.profile.%(Filename)%(Extension)" />
+    <None Include="..\profiles\*.json" CopyToOutputDirectory="PreserveNewest" Link="profiles\%(Filename)%(Extension)" />
     <!-- 托盘动效宫格（3 列=待机/语音/按键 × 3 帧）。改图：跑 make-tray-icons.ps1
          （品红底大图 → 抠像 + 逐图标居中归一化）生成 tray.icons.png 后重新 publish -->
     <EmbeddedResource Include="tray.icons.png" LogicalName="VibeMate.tray.icons.png" />
@@ -50,6 +55,8 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- 诊断冒烟（.diag/profile-smoke）直连 internal 成员的测试接缝 -->
+    <InternalsVisibleTo Include="ProfileSmoke" />
   </ItemGroup>
 
 </Project>

@@ -22,11 +22,11 @@ internal static class DeviceDb
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
         "VibeMate", "devices.json");
 
-    // 表随仓库走（mumutoy/vibe-mote 根目录 devices.json）；改仓库/表路径只动这里
+    // 表随仓库走（Fluctio-ai/vibemate 根目录 devices.json）；改仓库/表路径只动这里
     private static readonly string[] RemoteUrls =
     {
-        "https://cdn.jsdelivr.net/gh/mumutoy/vibe-mote@main/devices.json",
-        "https://raw.githubusercontent.com/mumutoy/vibe-mote/main/devices.json",
+        "https://cdn.jsdelivr.net/gh/Fluctio-ai/vibemate@main/devices.json",
+        "https://raw.githubusercontent.com/Fluctio-ai/vibemate/main/devices.json",
     };
 
     static DeviceDb() => Load();

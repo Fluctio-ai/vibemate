@@ -44,15 +44,28 @@ public sealed class KeysRole : IDisposable
     /// <summary>当前会话的管道（学习模式 start/stop 要跨线程下发 filter，存一份引用）。</summary>
     private NamedPipeClientStream? _pipe;
 
-    /// <summary>当前报告指纹：devices[addr].report（学习产物或设备表预填）> Google 默认。
+    /// <summary>当前报告指纹：devices[addr].report（学习产物）> 设备档案（本机/
+    /// 打包，v2.3.0：档案命中的设备指纹开箱即用，如 RC003 不必先学）> Google 默认。
     /// 缓存值 —— HandleLine 是每份报告都走的热路径，走 _getDevice() 等于全配置
     /// 深拷贝（还要和磁盘写抢同一把配置锁）。配置变更时 ReloadProfile 重算
     /// （Program 的 ConfigChanged 处理器调用，与 ReloadMapping 同节奏）。</summary>
     internal volatile ReportProfile Profile = ReportProfile.Google;
 
-    /// <summary>配置变更后重算指纹（切设备/学习保存即时生效）。</summary>
+    /// <summary>配置变更后重算指纹（切设备/学习保存/档案导入即时生效）。</summary>
     public void ReloadProfile() =>
-        Profile = ReportProfile.FromConfig(_getDevice()) ?? ReportProfile.Google;
+        Profile = ReportProfile.FromConfig(_getDevice())
+                 ?? FromDeviceProfile()
+                 ?? ReportProfile.Google;
+
+    /// <summary>按当前选中设备的身份查档案指纹（ProfileStore：本机 > 打包）。
+    /// ReloadProfile 时机调用（配置变更/切设备），不在报告热路径 —— 注册表与
+    /// 档案文件解析只在这里发生，量级无害。读不到身份/没有档案返回 null。</summary>
+    private ReportProfile? FromDeviceProfile()
+    {
+        if (ProfileStore.IdentityOfAddr(_getAddr()) is not { } id) return null;
+        var (p, _) = ProfileStore.Lookup(id.Vid, id.Pid, id.Rev, id.Name);
+        return ReportProfile.FromConfig(p);   // FromConfig 读 p["report"]，直接传档案根
+    }
 
     /// <summary>选中设备变更：断开当前会话，主循环下一轮按新地址重解析宿主重连。
     /// 不主动踢的话，已连着的旧设备会话会一直挂着，切设备要重启应用才生效。</summary>

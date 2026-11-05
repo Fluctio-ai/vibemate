@@ -139,6 +139,12 @@ public sealed class HttpServer
                 case "/api/btdevices":
                     ReplyJson(ctx, 200, ListPairedBtDevices());
                     return;
+                case "/api/device-profile":
+                    ServeDeviceProfile(ctx);
+                    return;
+                case "/api/device-profile/export":
+                    ServeProfileExport(ctx);
+                    return;
                 case "/api/capture/poll":
                     ReplyJson(ctx, 200, CaptureService.Poll());
                     return;
@@ -153,9 +159,15 @@ public sealed class HttpServer
                     return;
             }
         }
-        else if (req.HttpMethod == "POST" && path is "/api/config" or "/api/capture/start"
+        else if (req.HttpMethod == "POST" && path.StartsWith("/api/device-profile/"))
+        {
+            if (!Guard(ctx)) return;
+            ServeDeviceProfilePost(ctx, path);
+            return;
+        }
+        else if (req.HttpMethod == "POST" && (path is "/api/config" or "/api/capture/start"
                  or "/api/autostart" or "/api/cable/install" or "/api/cable/uninstall"
-                 or "/api/learn")
+                 or "/api/learn"))
         {
             if (!Guard(ctx)) return;
             if (path == "/api/learn")
@@ -317,10 +329,13 @@ public sealed class HttpServer
                     return;
                 }
                 var (okD, msgD) = _config.SetDevice(addr, dev);
+                // 双写（设计稿 §3）：地址级配置之外同时生成可移植档案 ——
+                // 设置页可导出分享，同型号机器导入即用
+                if (okD) ProfileStore.SaveLearned(addr, dev);
                 ReplyJson(ctx, 200, new JsonObject
                 {
                     ["ok"] = okD,
-                    ["msg"] = okD ? "已存入设备档案（指纹+键名）" : msgD,
+                    ["msg"] = okD ? "已存入设备档案（指纹+键名，可导出分享）" : msgD,
                 });
                 return;
             }
@@ -328,6 +343,208 @@ public sealed class HttpServer
                 ReplyJson(ctx, 200, new JsonObject { ["ok"] = false, ["msg"] = "未知 action" });
                 return;
         }
+    }
+
+    // ================= 设备配置档案（docs/device-profiles.md P1+P2）=================
+
+    /// <summary>GET /api/device-profile?addr=：当前设备的档案状态 —— 本地来源
+    /// （本机/打包/无）+ 云端查询进度 + 是否已有地址级用户配置。设置页轮询用。</summary>
+    private void ServeDeviceProfile(HttpListenerContext ctx)
+    {
+        var addr = ctx.Request.QueryString["addr"] ?? _config.Get("remote_addr", "");
+        if (ProfileStore.IdentityOfAddr(addr) is not { } id)
+        {
+            ReplyJson(ctx, 200, new JsonObject
+            { ["ok"] = true, ["addr"] = addr, ["deviceId"] = "", ["source"] = "none" });
+            return;
+        }
+        var (p, src) = ProfileStore.Lookup(id.Vid, id.Pid, id.Rev, id.Name);
+        var deviceId = ProfileStore.DeviceIdOf(id.Vid, id.Pid, id.Rev);
+        var dev = (_config.Snapshot()["devices"] as JsonObject)?[addr] as JsonObject;
+        ReplyJson(ctx, 200, new JsonObject
+        {
+            ["ok"] = true,
+            ["addr"] = addr,
+            ["deviceId"] = deviceId,
+            ["source"] = src,                          // local / packaged / none
+            ["userConfigured"] = dev?["report"] is not null,   // 地址级学习成果（优先于档案）
+            ["buttons"] = (p?["labels"] as JsonObject)?.Count ?? 0,
+            ["cloud"] = ProfileStore.CloudInfo(deviceId),
+            ["pending"] = ProfileStore.PendingInfo(deviceId),
+        });
+    }
+
+    /// <summary>GET /api/device-profile/export?addr=&amp;actions=1：导出可移植档案
+    /// （附件下载）。动作预设默认不含 —— 勾选才带（隐私边界，设计稿 §7）。</summary>
+    private void ServeProfileExport(HttpListenerContext ctx)
+    {
+        var addr = ctx.Request.QueryString["addr"] ?? _config.Get("remote_addr", "");
+        var p = ProfileStore.BuildExport(_config, addr, ctx.Request.QueryString["actions"] == "1");
+        if (p is null)
+        {
+            ReplyJson(ctx, 200, new JsonObject
+            { ["ok"] = false, ["msg"] = "该设备还没有可导出的学习成果（先用「设备学习」录入按键）" });
+            return;
+        }
+        var bytes = Encoding.UTF8.GetBytes(p.ToJsonString(ConfigService.JsonOpts));
+        ctx.Response.StatusCode = 200;
+        ctx.Response.ContentType = "application/json; charset=utf-8";
+        ctx.Response.Headers["Content-Disposition"] =
+            $"attachment; filename=\"{ProfileStore.FileNameOf(p)}\"";
+        ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+        ctx.Response.Close();
+    }
+
+    /// <summary>POST /api/device-profile/lookup：启动云端查询（后台，立即返回 ——
+    /// HTTP 单线程串行，5s 网络等待绝不能占 Loop，cable/install 同款纪律）。</summary>
+    private void ServeDeviceProfilePost(HttpListenerContext ctx, string path)
+    {
+        if (ReadJsonBody(ctx) is not { } j) return;
+        switch (path)
+        {
+            case "/api/device-profile/lookup":
+            {
+                if (ProfileStore.IdentityOfAddr(
+                        j["addr"]?.GetValue<string>() ?? _config.Get("remote_addr", "")) is not { } id)
+                {
+                    ReplyJson(ctx, 200, new JsonObject
+                    { ["ok"] = false, ["msg"] = "未选择遥控器，或读不到设备身份（先连接并选中）" });
+                    return;
+                }
+                ReplyJson(ctx, 200, new JsonObject
+                {
+                    ["ok"] = true,
+                    ["deviceId"] = ProfileStore.DeviceIdOf(id.Vid, id.Pid, id.Rev),
+                    ["cloud"] = ProfileStore.StartCloudQuery(id.Vid, id.Pid, id.Rev),
+                });
+                return;
+            }
+            case "/api/device-profile/import":
+                ServeProfileImport(ctx, j);
+                return;
+            default:
+                ReplyJson(ctx, 404, new JsonObject { ["ok"] = false, ["msg"] = "not found" });
+                return;
+        }
+    }
+
+    /// <summary>导入/下载档案：两段式（设计稿 §7 的确认纪律）——
+    /// 第一段不带 apply：文件导入同步返回预览；云端下载起后台任务、前端轮询 pending。
+    /// 第二段带 apply：落盘本机档案 + 预填 labels/report 到 devices[addr]
+    ///（+ 可选动作预设合并进 keys，显式勾选才动）。</summary>
+    private void ServeProfileImport(HttpListenerContext ctx, JsonObject j)
+    {
+        var apply = j["apply"]?.GetValue<bool>() ?? false;
+        var applyActions = j["applyActions"]?.GetValue<bool>() ?? false;
+        var addr = j["addr"]?.GetValue<string>() ?? _config.Get("remote_addr", "");
+        JsonObject? prof;
+        string err;
+
+        if (j["download"]?.GetValue<string>() is { } deviceId)
+        {
+            if (!apply)
+            {   // 第一段：起后台下载（进度进 Pending，GET /api/device-profile 轮询）
+                ProfileStore.StartDownload(deviceId);
+                ReplyJson(ctx, 200, new JsonObject { ["ok"] = true, ["status"] = "downloading" });
+                return;
+            }
+            (prof, err) = ProfileStore.TakePending(deviceId);
+        }
+        else if (j["json"]?.GetValue<string>() is { } text)
+        {
+            (prof, err) = ProfileStore.Parse(text);
+        }
+        else
+            (prof, err) = (null, "缺少 json 或 download 参数");
+
+        if (prof is null)
+        {
+            ReplyJson(ctx, 200, new JsonObject { ["ok"] = false, ["msg"] = err });
+            return;
+        }
+        var dev = (JsonObject)prof["device"]!;
+        var vid = dev["vid"]!.GetValue<string>();
+        var pid = dev["pid"]!.GetValue<string>();
+
+        // 文件名与身份一致校验（设计稿 §4，防改名张冠李戴）：仅文件导入，前端带原始文件名
+        if (j["download"] is null && j["name"]?.GetValue<string>() is { } fname
+            && !fname.ToLowerInvariant().StartsWith($"{vid}-{pid}"))
+        {
+            ReplyJson(ctx, 200, new JsonObject
+            { ["ok"] = false, ["msg"] = $"文件名与档案身份不符（应为 {vid}-{pid}*.json）" });
+            return;
+        }
+
+        // 预览（apply=false 到此为止）
+        if (!apply)
+        {
+            ReplyJson(ctx, 200, new JsonObject
+            {
+                ["ok"] = true,
+                ["preview"] = new JsonObject
+                {
+                    ["status"] = "ready",
+                    ["deviceId"] = ProfileStore.DeviceIdOf(vid, pid, ""),
+                    ["vid"] = vid,
+                    ["pid"] = pid,
+                    ["revs"] = dev["revs"]?.DeepClone(),
+                    ["names"] = dev["names"]?.DeepClone(),
+                    ["buttons"] = (prof["labels"] as JsonObject)?.Count ?? 0,
+                    ["hasActions"] = prof["actions"] is JsonObject,
+                },
+            });
+            return;
+        }
+
+        // 第二段：应用。身份不符防线 —— 档案是 Google 的、选中的是小米，预填过去
+        // 就是错指纹（按键全灭），直接拒（vid+pid 都相同才视为同型号）
+        if (ProfileStore.IdentityOfAddr(addr) is { } cur
+            && (!string.Equals(cur.Vid, vid, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(cur.Pid, pid, StringComparison.OrdinalIgnoreCase)))
+        {
+            ReplyJson(ctx, 200, new JsonObject
+            {
+                ["ok"] = false,
+                ["msg"] = $"档案与当前设备型号不符（档案 {vid}:{pid}，" +
+                          $"当前 {cur.Vid}:{cur.Pid}）—— 请先选中对应遥控器",
+            });
+            return;
+        }
+
+        var source = j["download"] is not null ? "cloud" : "imported";
+        var meta = prof["meta"] as JsonObject ?? new JsonObject();
+        meta["source"] = source;
+        meta["updated"] = DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+        prof["meta"] = meta;
+        var (okS, msgS) = ProfileStore.Save(prof, source);
+        if (!okS)
+        {
+            ReplyJson(ctx, 200, new JsonObject { ["ok"] = false, ["msg"] = msgS });
+            return;
+        }
+
+        var labels = (prof["labels"] as JsonObject)?.Count ?? 0;
+        if (addr.Length > 0)
+        {
+            _config.SetDevice(addr, new JsonObject
+            {
+                ["report"] = prof["report"]?.DeepClone(),
+                ["labels"] = prof["labels"]?.DeepClone(),
+            });
+        }
+        var acts = applyActions ? prof["actions"] as JsonObject : null;
+        if (acts is not null)
+        {
+            var keysM = _config.Snapshot()["keys"]?.DeepClone().AsObject() ?? new JsonObject();
+            foreach (var (name, a) in acts) keysM[name] = a?.DeepClone();
+            _config.Apply(new JsonObject { ["keys"] = keysM });
+        }
+        ReplyJson(ctx, 200, new JsonObject
+        {
+            ["ok"] = true,
+            ["msg"] = $"档案已导入（{msgS}）：预填 {labels} 个键名"
+                      + (acts is not null ? $" + {acts.Count} 个动作预设" : ""),
+        });
     }
 
     // ---------- 计划任务 / 开机自启（任务名唯一出处：登录触发 + 最高权限）----------
@@ -519,6 +736,14 @@ public sealed class HttpServer
                             {
                                 item["model"] = known["model"]?.GetValue<string>();
                                 item["voice"] = known["voice"]?.GetValue<string>();
+                            }
+                            // 档案来源徽标（设计稿 §9）：本机/打包有档案的设备
+                            // 开箱即用；设置页下拉据此显示标记
+                            var (pp, psrc) = ProfileStore.Lookup(vp.Vid, vp.Pid, vp.Rev, name);
+                            if (pp is not null)
+                            {
+                                item["profileSource"] = psrc;
+                                item["deviceId"] = ProfileStore.DeviceIdOf(vp.Vid, vp.Pid, vp.Rev);
                             }
                         }
                         devices[key] = item;

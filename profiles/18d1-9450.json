@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "device": {
+    "vid": "18d1",
+    "pid": "9450",
+    "revs": ["0110", "011b"],
+    "names": ["chromecast remote", "chromecast voice remote"]
+  },
+  "voice": "atvv",
+  "report": { "len": 3, "id": 2, "off": 1, "w": 2 },
+  "labels": {
+    "0x019e": "power",
+    "0x0189": "input",
+    "0x0042": "up",
+    "0x0043": "down",
+    "0x0044": "left",
+    "0x0045": "right",
+    "0x0041": "ok",
+    "0x0224": "back",
+    "0x0223": "home",
+    "0x00e9": "volup",
+    "0x00ea": "voldown",
+    "0x00e2": "mute",
+    "0x0077": "youtube",
+    "0x0078": "netflix"
+  },
+  "meta": {
+    "author": "vibemate",
+    "updated": "2026-11-05T12:00:00Z",
+    "source": "builtin",
+    "verified": true,
+    "note": "Google Chromecast Voice Remote, rev 0110/011b"
+  }
+}

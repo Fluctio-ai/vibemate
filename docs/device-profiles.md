@@ -1,7 +1,9 @@
 # 设备配置档案与社区共享（设计稿）
 
-> 状态：**设计稿，未实现**（2026-11-05）。本文档描述目标行为与实现拆解，
-> 代码实现留待后续版本。现有能力见 README「支持设备」。
+> 状态：**P1 + P2 已实现（v2.3.0，2026-11-05）**；P3（默认未知化）未实施。
+> 实现落点：`VibeMate/ProfileStore.cs`（档案库）、`HttpServer.cs`（`/api/device-profile*`
+> 路由）、`web/index.html`（设置页档案卡）、`profiles/`（打包档案）、`cloud/`
+> （主仓库 `profiles/` 云端索引）。本文档其余部分保留原设计与验收清单。
 >
 > 关联：`devices.json`、`VibeMate/DeviceDb.cs`、按键学习（`KeysRole`）、
 > 配置热更新（`ConfigService`）、`tap/tap.c` 的 GATT 桥接。
@@ -164,7 +166,7 @@
 
 ## 6. 云端仓库布局与查询
 
-沿用现有云端仓库（`mumutoy/vibe-mote`，`devices.json` 所在仓库）新增目录：
+直接用主仓库（`Fluctio-ai/vibemate`，`devices.json` 所在仓库）新增目录：
 
 ```
 devices.json                 # 现有总表（保留：型号/语音/默认标签）
@@ -237,7 +239,7 @@ profiles/
 
 ## 10. 实现拆解
 
-### P1 · 本机档案（可移植、可导入导出、随包发布）
+### P1 · 本机档案（可移植、可导入导出、随包发布）—— ✅ 已实现
 
 - 新增 `DeviceProfile` 模型（序列化/校验）；
 - 档案存储：`ProgramData\VibeMate\profiles\`；
@@ -250,13 +252,14 @@ profiles/
 - 触摸文件：`DeviceDb.cs`、`ConfigService.cs`、`KeysRole.cs`、`HttpServer.cs`、
   `web/`、`VibeMate.csproj`、`profiles/`、`README.md`。
 
-### P2 · 云端查询与分享闭环
+### P2 · 云端查询与分享闭环 —— ✅ 已实现（客户端侧）
 
 - 本地（本机 + 打包）未命中时才查询云端——**新设备主路径**；
 - `profiles/index.json` 拉取与缓存（多源轮询，复用 DeviceDb 的套路）；
 - 前端弹窗（有则询问下载，无则提示学习）；
 - 下载校验（schema + sha256）；
-- 仓库 `profiles/` 目录、CI 校验、PR/Issue 模板；
+- 仓库 `profiles/` 目录、CI 校验、PR/Issue 模板；   ← 已落地（主仓库 `profiles/`，
+  云端即主仓库，无需独立 vibe-mote 仓库；`cloud/` 已并入 `profiles/index.json`）
 - 触摸文件：`DeviceDb.cs`（或新增 `ProfileStore.cs`）、`HttpServer.cs`、`web/`、
   仓库根 `profiles/`、`.github/`。
 
@@ -281,12 +284,16 @@ profiles/
 
 ## 12. 验收清单（P1+P2）
 
+> 2026-11-05：代码全部落地，核心逻辑冒烟通过（`.diag/profile-smoke`，14 项：
+> 打包档案匹配/异型号防线/Parse 白名单/伪 usage 归一）。实机验收（真机遥控器
+> 连接、断网、双机导入）待新版本部署后逐条勾销。
+
 - [ ] 打包档案覆盖的常见设备：**断网**首次连接即可用（不提示下载）。
 - [ ] 未知设备首次连接：先查云端；有档案则弹窗询问，拒绝后本次不再打扰。
 - [ ] 云端无档案时：提示文案与学习入口正确。
 - [ ] 未知设备离线：提示可学习，不影响按键/语音其他功能。
 - [ ] 同 DeviceId 的另一台机器导入档案后：标签自动预填，按键可用，无需再学。
 - [ ] 学完可导出档案；导出文件不包含蓝牙地址与用户自定义动作（除非显式勾选）。
-- [ ] 导入恶意/超大/坏 JSON：被拒绝且程序不受影响。
+- [ ] 导入恶意/超大/坏 JSON：被拒绝且程序不受影响。（冒烟已验 Parse 拒收路径）
 - [ ] 断网/超时：启动、按键、语音均不受影响。
-- [ ] 发布包内含 `profiles/` 且 exe 内嵌同版本副本（sha 一致）。
+- [ ] 发布包内含 `profiles/` 且 exe 内嵌同版本副本（csproj 同源两份）。

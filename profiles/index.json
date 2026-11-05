@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "updated": "2026-11-05T12:00:00Z",
+  "devices": {
+    "18d1:9450:0110": {
+      "file": "18d1-9450.json",
+      "sha256": "db98d3a8c5feb3dd2d93725f0122bd899d242c3a7950dc5a436f92e10515f336",
+      "author": "vibemate",
+      "updated": "2026-11-05T12:00:00Z",
+      "buttons": 14
+    },
+    "18d1:9450:011b": {
+      "file": "18d1-9450.json",
+      "sha256": "db98d3a8c5feb3dd2d93725f0122bd899d242c3a7950dc5a436f92e10515f336",
+      "author": "vibemate",
+      "updated": "2026-11-05T12:00:00Z",
+      "buttons": 14
+    },
+    "2717:32b8:00a4": {
+      "file": "2717-32b8-00a4.json",
+      "sha256": "d3b44143dbe181134a12fb0b32d54fd841f358e0648871195bdd1daeeeadefaf",
+      "author": "vibemate",
+      "updated": "2026-11-05T12:00:00Z",
+      "buttons": 9
+    }
+  }
+}
